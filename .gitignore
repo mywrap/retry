@@ -11,3 +11,6 @@ profile*.pdf
 
 # config file with real password
 *ignore*.sh
+
+
+*.csv

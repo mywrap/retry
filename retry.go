@@ -1,6 +1,7 @@
 package retry
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -11,86 +12,99 @@ import (
 )
 
 // Retrier is used for retrying jobs, retry state will be saved to a persistent
-// storage (etcd) so others machine (or restarted machine) can continue the jobs
+// Storage (etcd) so others machine (or restarted machine) can continue the jobs
 // after a crash.
 type Retrier struct {
 	jobFunc      func(inputs ...interface{}) error
 	cfg          *Config
-	storage      Storage
-	hostname     string
+	Storage      Storage
+	retrierName  string // all machines in a cluster share this name
+	Hostname     string
 	stopJobChans map[JobId]chan bool
 	mutex        *sync.Mutex // for map stopJobChans
 }
 
-// :param jobFunc: inputs must be JSONable if using persist storage
-// :param retrierName: optional, used as a namespace in persist storage
+// :param jobFunc: inputs must be JSONable if using persist Storage
+// :param retrierName: optional, used as a namespace in persist Storage
 func NewRetrier(jobFunc func(inputs ...interface{}) error,
 	cfg *Config, storage Storage, retrierName string) *Retrier {
-	if cfg == nil {
-		cfg = NewDefaultConfig()
+	r := &Retrier{
+		jobFunc: jobFunc, cfg: cfg, Storage: storage, retrierName: retrierName,
+		stopJobChans: make(map[JobId]chan bool), mutex: &sync.Mutex{}}
+	if r.cfg == nil {
+		r.cfg = NewDefaultConfig()
 	}
-	if storage == nil {
-		storage = NewMemoryStorage()
+	if r.Storage == nil {
+		r.Storage = NewMemoryStorage()
 	}
-	hostname, _ := os.Hostname()
-	if hostname == "" {
-		hostname = "hostname0"
+	r.Hostname, _ = os.Hostname()
+	if r.Hostname == "" {
+		r.Hostname = "hostname0"
 	}
-	return &Retrier{
-		jobFunc: jobFunc,
-		cfg:     cfg, storage: storage, hostname: hostname,
-		stopJobChans: make(map[JobId]chan bool), mutex: &sync.Mutex{},
+	if r.retrierName == "" {
+		r.retrierName = "retrier0"
 	}
+	return r
 }
 
-// do runs a job (newly created or loaded from queue jobs in storage),
-// :params jobFuncInputs: will be ignored if the jobId existed in storage
+// do runs a job (newly created or loaded from queue jobs in Storage),
+// :params jobFuncInputs: will be ignored if the jobId existed in Storage
 func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
-	job, err := r.storage.TakeOrCreateJob(jobId, jobFuncInputs)
+	j, err := r.Storage.TakeOrCreateJob(jobId, jobFuncInputs)
 	if err != nil {
-		return Job{}, fmt.Errorf("storage TakeOrCreateJob: %v", err)
+		return Job{}, fmt.Errorf("storage TakeOrCreateJob: %w", err)
 	}
+
 	stopJobChan := make(chan bool)
 	r.mutex.Lock()
-	r.stopJobChans[job.Id] = stopJobChan
+	r.stopJobChans[j.Id] = stopJobChan
 	r.mutex.Unlock()
+	defer func() {
+		r.mutex.Lock()
+		delete(r.stopJobChans, j.Id)
+		r.mutex.Unlock()
+	}()
 	for {
-		err := r.jobFunc(job.JobFuncInputs...)
-		job.NTries++
-		job.LastTried = time.Now()
-		job.LastHost = r.hostname
-		job.NextDelay = r.cfg.DelayType(job.NTries, r.cfg)
-		if r.cfg.MaxDelay > 0 && job.NextDelay > r.cfg.MaxDelay {
-			job.NextDelay = r.cfg.MaxDelay
+		err := r.jobFunc(j.JobFuncInputs...)
+		j.NTries++
+		j.LastTried = time.Now()
+		j.LastHost = r.Hostname
+		j.NextDelay = r.cfg.DelayType(j.NTries, r.cfg)
+		if r.cfg.MaxDelay > 0 && j.NextDelay > r.cfg.MaxDelay {
+			j.NextDelay = r.cfg.MaxDelay
 		}
 		if err == nil {
-			job.Errors = append(job.Errors, "")
-			job.Status = Stopped // successfully do the job
+			j.mutex.Lock()
+			j.Errors = append(j.Errors, "")
+			j.mutex.Unlock()
+			j.Status = Stopped // successfully do the job
 		} else {
-			job.Errors = append(job.Errors, err.Error())
-			if job.NTries == r.cfg.MaxAttempts {
-				job.Status = Stopped //  give up after max attempts
+			j.mutex.Lock()
+			j.Errors = append(j.Errors, err.Error())
+			j.mutex.Unlock()
+			if j.NTries >= r.cfg.MaxAttempts {
+				j.Status = Stopped //  give up after max attempts
 			} else {
-				job.Status = Running
+				j.Status = Running
 			}
 		}
-		err = r.storage.UpdateJob(job)
+		err = r.Storage.UpdateJob(j)
 		if err != nil {
-			return job, fmt.Errorf("storage UpdateJob: %v", err)
+			return j, fmt.Errorf("storage UpdateJob: %w", err)
 		}
-		if job.Status == Stopped {
-			return job, nil
+		if j.Status == Stopped {
+			return j, nil
 		}
 		select {
-		case <-time.After(job.NextDelay):
+		case <-time.After(j.NextDelay):
 			continue
 		case <-stopJobChan:
-			job.Status = Stopped
-			err = r.storage.UpdateJob(job)
+			j.Status = Stopped
+			err = r.Storage.UpdateJob(j)
 			if err != nil {
-				return job, fmt.Errorf("storage UpdateJob: %v", err)
+				return j, fmt.Errorf("storage UpdateJob: %w", err)
 			}
-			return job, nil
+			return j, nil
 		}
 	}
 }
@@ -103,12 +117,12 @@ func (r Retrier) LoopTakeQueueJobs() {
 			coolDown = 1 * time.Minute
 		}
 
-		_, err := r.storage.RequeueHangingJobs()
+		_, err := r.Storage.RequeueHangingJobs()
 		if err != nil {
 			time.Sleep(coolDown)
 			continue
 		}
-		jobs, err := r.storage.TakeJobs()
+		jobs, err := r.Storage.TakeJobs()
 		if err != nil {
 			time.Sleep(coolDown)
 			continue
@@ -124,19 +138,20 @@ func (r Retrier) Stop(jobId JobId) error {
 	stopJobChan, found := r.stopJobChans[jobId]
 	r.mutex.Unlock()
 	if !found {
-		return ErrJobIsNotRunning
+		return ErrJobNotRunning
 	}
-	stopJobChan <- true
-	r.mutex.Lock()
-	delete(r.stopJobChans, jobId)
-	r.mutex.Unlock()
-	return nil
+	select {
+	case stopJobChan <- true:
+		return nil
+	case <-time.After(1 * time.Second):
+		return ErrUnreachable
+	}
 }
 
 // Config for Retrier
 type Config struct {
 	MaxAttempts int
-	Delay       time.Duration // delay between retries, default 50ms
+	Delay       time.Duration // delay between retries, default 100ms
 	MaxDelay    time.Duration // max delay between retries, not apply by default
 	MaxJitter   time.Duration // random duration added to delay, default 100ms
 	// defined delay duration for n-th attempt,
@@ -147,7 +162,7 @@ type Config struct {
 func NewDefaultConfig() *Config {
 	return &Config{
 		MaxAttempts: 10,
-		Delay:       50 * time.Millisecond,
+		Delay:       100 * time.Millisecond,
 		MaxJitter:   100 * time.Millisecond,
 		DelayType:   ExpBackOffDelay,
 	}
@@ -157,10 +172,21 @@ func NewDefaultConfig() *Config {
 // (exponential back-off or fixed delay are common choices)
 type DelayTypeFunc func(nTries int, config *Config) time.Duration
 
+var (
+	sqrt5 = math.Sqrt(5)
+	phiPo = (1 + sqrt5) / 2
+	phiNe = (1 - sqrt5) / 2
+)
+
+func fibonacci(n int) int64 {
+	nn := float64(n)
+	return int64(math.Round((math.Pow(phiPo, nn) - math.Pow(phiNe, nn)) / sqrt5))
+}
+
 // a Fibonacci delay sequence,
-// example if base delay is 50ms then next 9 delays are  50, 80, 130, .. , 3800 ms
+// example if base delay is 100ms then next 9 delays are  100, 200, 300, .. , 5500 ms
 func ExpBackOffDelay(nTries int, config *Config) time.Duration {
-	delay := config.Delay * time.Duration(math.Pow(1.618, float64(nTries-1)))
+	delay := config.Delay * time.Duration(fibonacci(nTries))
 	if config.MaxJitter > 0 {
 		delay += time.Duration(rand.Int63n(int64(config.MaxJitter)))
 	}
@@ -183,11 +209,14 @@ type Job struct {
 	NTries        int // number of tried attempts
 	NextDelay     time.Duration
 	LastTried     time.Time
-	LastHost      string   // human readable, the last machine run the job
-	Errors        []string // errors of attempts
+	LastHost      string      // human readable, the last machine run the job
+	Errors        []string    // errors of attempts
+	mutex         *sync.Mutex // for Errors
 }
 
 func (j Job) LastErr() error {
+	j.mutex.Lock()
+	defer j.mutex.Unlock()
 	if len(j.Errors) < 1 {
 		return nil
 	}
@@ -196,6 +225,13 @@ func (j Job) LastErr() error {
 		return nil
 	}
 	return errors.New(lastErrMsg)
+}
+
+func (j Job) AllErrorsStr() string {
+	j.mutex.Lock()
+	defer j.mutex.Unlock()
+	bs, _ := json.Marshal(j.Errors)
+	return string(bs)
 }
 
 type JobId string     // unique, example catted from a meaningful prefix and a UUID
@@ -209,9 +245,11 @@ const (
 )
 
 var (
-	ErrJobRunning      = errors.New("job is running")
-	ErrJobIsNotRunning = errors.New("job is not running on this machine")
-	errNotImplemented  = errors.New("not implemented")
+	ErrJobRan         = errors.New("job ran")
+	ErrJobStopped     = errors.New("job stopped")
+	ErrJobNotRunning  = errors.New("job is not running on this machine")
+	ErrUnreachable    = errors.New("something went wrong :v")
+	errNotImplemented = errors.New("not implemented")
 )
 
 type Storage interface {
@@ -225,4 +263,5 @@ type Storage interface {
 	RequeueHangingJobs() (nRequeueJobs int, err error)
 	// take all queuing jobs to run, update the jobs status to running
 	TakeJobs() ([]Job, error)
+	DeleteStoppedJobs() (nDeletedJobs int, err error)
 }
