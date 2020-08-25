@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// Retrier is used for retrying jobs, retry state will be saved to a persistent
+// storage (etcd) so others machine (or restarted machine) can continue the jobs
+// after a crash.
 type Retrier struct {
 	jobFunc      func(inputs ...interface{}) error
 	cfg          *Config

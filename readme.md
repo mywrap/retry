@@ -1,8 +1,8 @@
 # Stateful retry
 
 A lib for retrying jobs, retry state will be saved to a persistent storage
-([etcd](https://github.com/etcd-io/etcd)) so others instant (or 
-restarted instant) can continue the jobs after a crash.  
+([etcd](https://github.com/etcd-io/etcd)) so others machine (or 
+restarted machine) can continue the jobs after a crash.  
 Support a in-memory storage for simple usage.  
 Inspired by [avast/retry-go](https://github.com/avast/retry-go).
 
