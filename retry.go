@@ -42,10 +42,10 @@ func NewRetrier(jobFunc func(inputs ...interface{}) error,
 
 // do runs a job (newly created or loaded from queue jobs in storage),
 // :params jobFuncInputs: will be ignored if the jobId existed in storage
-func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (*Job, error) {
+func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 	job, err := r.storage.TakeOrCreateJob(jobId, jobFuncInputs)
 	if err != nil {
-		return nil, fmt.Errorf("storage TakeOrCreateJob: %v", err)
+		return Job{}, fmt.Errorf("storage TakeOrCreateJob: %v", err)
 	}
 	stopJobChan := make(chan bool)
 	r.mutex.Lock()
@@ -215,11 +215,11 @@ type Storage interface {
 	// read jobId from queue jobs (ignore jobFuncInputs), create if not existed,
 	// return err if the job is running (maybe on other machine),
 	// update the jobs status to running
-	TakeOrCreateJob(jobId JobId, jobFuncInputs []interface{}) (*Job, error)
-	UpdateJob(*Job) error // call after one attempt or when manually stop the job
+	TakeOrCreateJob(jobId JobId, jobFuncInputs []interface{}) (Job, error)
+	UpdateJob(Job) error // call after one attempt or when manually stop the job
 	// Check all running jobs, if a job lastAttempted too long time ago change it
 	// status to queue. Costly func, should run once per minutes.
 	RequeueHangingJobs() (nRequeueJobs int, err error)
 	// take all queuing jobs to run, update the jobs status to running
-	TakeJobs() ([]*Job, error)
+	TakeJobs() ([]Job, error)
 }
