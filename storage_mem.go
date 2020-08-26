@@ -30,18 +30,13 @@ func (s *MemoryStorage) TakeOrCreateJob(jobId JobId, jobFuncInputs []interface{}
 	defer s.mutex.Unlock()
 	job, found := s.jobs[jobId]
 	if found {
-		if job.Status == Running {
-			return Job{}, ErrJobRan
+		if job.Status == Running || job.Status == Stopped {
+			return Job{}, ErrJobRunningOrStopped
 		}
-		if job.Status == Stopped {
-			return Job{}, ErrJobStopped
-		}
-		s.idxStatusNextTry.Delete(job)
+		s.idxStatusNextTry.Delete(job) // update index for queuing index
 	} else { // not found, create new job
-		job = NewJobInTree(&Job{
-			JobFuncInputs: jobFuncInputs, Id: jobId, Status: Queue,
-			NTries: 0, NextDelay: 0, LastTried: time.Now(),
-			Errors: make([]string, 0), mutex: &sync.Mutex{}})
+		job = NewJobInTree(&Job{JobFuncInputs: jobFuncInputs,
+			Id: jobId, Status: Queue, LastTried: time.Now()})
 	}
 	job.Status = Running
 	job.calcKeyStatusNextTry()

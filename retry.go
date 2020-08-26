@@ -25,6 +25,7 @@ type Retrier struct {
 	mutex       *sync.Mutex // for map stopJobCxls
 }
 
+// NewRetrier init a retrier, default save retrying state to memory.
 // :param jobFunc: inputs must be JSONable if using persist Storage
 // :param retrierName: optional, used as a namespace in persist Storage
 func NewRetrier(jobFunc func(inputs ...interface{}) error,
@@ -46,17 +47,19 @@ func NewRetrier(jobFunc func(inputs ...interface{}) error,
 		r.Hostname = "hostname0"
 	}
 	if r.retrierName == "" {
-		r.retrierName = "retrier0"
+		r.retrierName = "/retrier0"
 	}
 	return r
 }
 
-// do runs a job (newly created or loaded from queue jobs in Storage),
+// Do runs a job (newly created or loaded from queue jobs in Storage),
+// if returned error is not nil or ErrJobRunningOrStopped, user should Do again
+// to ensure the job created
 // :params jobFuncInputs: will be ignored if the jobId existed in Storage
 func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 	j, err := r.Storage.TakeOrCreateJob(jobId, jobFuncInputs)
 	if err != nil {
-		return Job{}, fmt.Errorf("storage TakeOrCreateJob: %w", err)
+		return Job{}, fmt.Errorf("error storage TakeOrCreateJob: %w", err)
 	}
 
 	stopCtx, cxl := context.WithCancel(context.Background())
@@ -78,14 +81,10 @@ func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 			j.NextDelay = r.cfg.MaxDelay
 		}
 		if err == nil {
-			j.mutex.Lock()
 			j.Errors = append(j.Errors, "")
-			j.mutex.Unlock()
 			j.Status = Stopped // successfully do the job
 		} else {
-			j.mutex.Lock()
 			j.Errors = append(j.Errors, err.Error())
-			j.mutex.Unlock()
 			if j.NTries >= r.cfg.MaxAttempts {
 				j.Status = Stopped //  give up after max attempts
 			} else {
@@ -94,7 +93,7 @@ func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 		}
 		err = r.Storage.UpdateJob(j)
 		if err != nil {
-			return j, fmt.Errorf("storage UpdateJob: %w", err)
+			return j, fmt.Errorf("error storage UpdateJob: %w", err)
 		}
 		if j.Status == Stopped {
 			return j, nil
@@ -106,11 +105,22 @@ func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 			j.Status = Stopped
 			err = r.Storage.UpdateJob(j)
 			if err != nil {
-				return j, fmt.Errorf("storage UpdateJob: %w", err)
+				return j, fmt.Errorf("error storage UpdateJob: %w", err)
 			}
 			return j, nil
 		}
 	}
+}
+
+func (r Retrier) Stop(jobId JobId) error {
+	r.mutex.Lock()
+	stopJobCxl, found := r.stopJobCxls[jobId]
+	r.mutex.Unlock()
+	if !found {
+		return ErrJobNotRunning
+	}
+	stopJobCxl()
+	return nil
 }
 
 // LoopTakeQueueJobs is meaningless on MemoryStorage because queue jobs do not exist
@@ -135,17 +145,6 @@ func (r Retrier) LoopTakeQueueJobs() {
 			r.Do(job.Id)
 		}
 	}
-}
-
-func (r Retrier) Stop(jobId JobId) error {
-	r.mutex.Lock()
-	stopJobCxl, found := r.stopJobCxls[jobId]
-	r.mutex.Unlock()
-	if !found {
-		return ErrJobNotRunning
-	}
-	stopJobCxl()
-	return nil
 }
 
 // Config for Retrier
@@ -209,14 +208,11 @@ type Job struct {
 	NTries        int // number of tried attempts
 	NextDelay     time.Duration
 	LastTried     time.Time
-	LastHost      string      // human readable, the last machine run the job
-	Errors        []string    // errors of attempts
-	mutex         *sync.Mutex // for Errors
+	LastHost      string   // human readable, the last machine run the job
+	Errors        []string // errors of attempts
 }
 
 func (j Job) LastErr() error {
-	j.mutex.Lock()
-	defer j.mutex.Unlock()
 	if len(j.Errors) < 1 {
 		return nil
 	}
@@ -228,13 +224,11 @@ func (j Job) LastErr() error {
 }
 
 func (j Job) AllErrorsStr() string {
-	j.mutex.Lock()
-	defer j.mutex.Unlock()
 	bs, _ := json.Marshal(j.Errors)
 	return string(bs)
 }
 
-type JobId string     // unique, example catted from a meaningful prefix and a UUID
+type JobId string     // unique
 type JobStatus string // enum
 
 // JobStatus enum
@@ -245,15 +239,14 @@ const (
 )
 
 var (
-	ErrJobRan         = errors.New("job ran")
-	ErrJobStopped     = errors.New("job stopped")
-	ErrJobNotRunning  = errors.New("job is not running on this machine")
-	errNotImplemented = errors.New("not implemented")
+	ErrJobRunningOrStopped = errors.New("job is running or stopped")
+	ErrJobNotRunning       = errors.New("job is not running on this machine")
+	errNotImplemented      = errors.New("not implemented")
 )
 
 type Storage interface {
 	// read jobId from queue jobs (ignore jobFuncInputs), create if not existed,
-	// return err if the job is running (maybe on other machine),
+	// return err ErrJobRunningOrStopped or underlying storage error,
 	// update the jobs status to running
 	TakeOrCreateJob(jobId JobId, jobFuncInputs []interface{}) (Job, error)
 	UpdateJob(Job) error // call after one attempt or when manually stop the job

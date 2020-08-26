@@ -43,7 +43,7 @@ func TestRetrierMemoryStorage1(t *testing.T) {
 	r := NewRetrier(jobCheckPayment, cfg, nil, "")
 	memSto := r.Storage.(*MemoryStorage)
 
-	const nJobs = 10000
+	const nJobs = 8000
 	wg := &sync.WaitGroup{}
 	for i := 0; i < nJobs; i++ {
 		wg.Add(1)
@@ -80,7 +80,7 @@ func TestRetrierMemoryStorage2(t *testing.T) {
 		Delay: 50 * time.Millisecond, MaxJitter: 10 * time.Millisecond}
 	r := NewRetrier(jobCheckPayment, cfg, nil, "")
 	memSto := r.Storage.(*MemoryStorage)
-	const nJobs = 10000
+	const nJobs = 2000
 	wg := &sync.WaitGroup{}
 	didJobs := make([]Job, nJobs)
 	for i := 0; i < nJobs; i++ {
@@ -93,15 +93,15 @@ func TestRetrierMemoryStorage2(t *testing.T) {
 				t.Errorf("error retrier do: %v", err)
 			}
 			didJobs[i] = didJob
-			// random do again
+			// random do job again
 			if rand.Intn(100) < 20 {
 				_, err := r.Do(JobId(txId), txId, time.Now().Format(time.RFC3339))
-				if !errors.Is(err, ErrJobRan) &&
-					!errors.Is(err, ErrJobStopped) {
+				if !errors.Is(err, ErrJobRunningOrStopped) {
 					t.Errorf("unexpected error retrier do: %v", err)
 				}
 			}
 		}(i)
+		// random stop job
 		go func() {
 			if rand.Intn(100) < 50 {
 				time.Sleep(r.cfg.DelayType(1+rand.Intn(5), r.cfg))
