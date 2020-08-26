@@ -59,7 +59,7 @@ func (s *MemoryStorage) UpdateJob(job Job) error {
 func (s *MemoryStorage) RequeueHangingJobs() (int, error) {
 	return 0, nil
 }
-func (s *MemoryStorage) TakeJobs() ([]Job, error) {
+func (s *MemoryStorage) TakeJobs() ([]JobId, error) {
 	return nil, nil
 }
 func (s *MemoryStorage) DeleteStoppedJobs() (int, error) {
@@ -116,10 +116,10 @@ func (s *MemoryStorage) ExportCSV(outFile string) (int, error) {
 // JobInTree must be inited by NewJobInTree
 type JobInTree struct {
 	*Job
-	keyStatusNextTry string // for improving performance key compare
+	keyStatusNextTry string
 }
 
-// wrap calcKeyStatusNextTry
+// NewJobInTree adds keyStatusNextTry field for improving performance key compare
 func NewJobInTree(job *Job) *JobInTree {
 	ret := &JobInTree{Job: job}
 	ret.calcKeyStatusNextTry()
@@ -128,7 +128,7 @@ func NewJobInTree(job *Job) *JobInTree {
 func (j *JobInTree) calcKeyStatusNextTry() {
 	j.keyStatusNextTry = fmt.Sprintf("/memory/%v/%v/%v",
 		j.Status,
-		j.LastTried.Add(3*j.NextDelay).Format("2006-01-02T15:04:05.999Z07:00"),
+		j.LastTried.Add(3*j.NextDelay).Format(fmtRFC3339Mili),
 		j.Id)
 }
 

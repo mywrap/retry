@@ -15,3 +15,14 @@ func main() {
 }
 ````
 Detail in [example.go](./example/example.go).
+
+## go mod etcd issue
+
+Must import `go.etcd.io/etcd/v3/clientv3` and
+
+````bash
+go mod init
+go get -v go.etcd.io/etcd/v3/clientv3@master
+````
+
+[github issue](https://github.com/etcd-io/etcd/issues/11749#issuecomment-620893935)

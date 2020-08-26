@@ -40,7 +40,7 @@ func jobCheckPayment(inputs ...interface{}) error {
 func TestRetrierMemoryStorage1(t *testing.T) {
 	rand.Seed(time.Now().UnixNano())
 	cfg := &Config{MaxAttempts: 10, Delay: 10 * time.Millisecond}
-	r := NewRetrier(jobCheckPayment, cfg, nil, "")
+	r := NewRetrier(jobCheckPayment, cfg, nil)
 	memSto := r.Storage.(*MemoryStorage)
 
 	const nJobs = 8000
@@ -78,7 +78,7 @@ func TestRetrierMemoryStorage1(t *testing.T) {
 func TestRetrierMemoryStorage2(t *testing.T) {
 	cfg := &Config{MaxAttempts: 10,
 		Delay: 50 * time.Millisecond, MaxJitter: 10 * time.Millisecond}
-	r := NewRetrier(jobCheckPayment, cfg, nil, "")
+	r := NewRetrier(jobCheckPayment, cfg, nil)
 	memSto := r.Storage.(*MemoryStorage)
 	const nJobs = 2000
 	wg := &sync.WaitGroup{}

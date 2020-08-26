@@ -19,7 +19,6 @@ type Retrier struct {
 	jobFunc     func(inputs ...interface{}) error
 	cfg         *Config
 	Storage     Storage
-	retrierName string // all machines in a cluster share this name
 	Hostname    string
 	stopJobCxls map[JobId]context.CancelFunc
 	mutex       *sync.Mutex // for map stopJobCxls
@@ -29,9 +28,9 @@ type Retrier struct {
 // :param jobFunc: inputs must be JSONable if using persist Storage
 // :param retrierName: optional, used as a namespace in persist Storage
 func NewRetrier(jobFunc func(inputs ...interface{}) error,
-	cfg *Config, storage Storage, retrierName string) *Retrier {
+	cfg *Config, storage Storage) *Retrier {
 	r := &Retrier{
-		jobFunc: jobFunc, cfg: cfg, Storage: storage, retrierName: retrierName,
+		jobFunc: jobFunc, cfg: cfg, Storage: storage,
 		stopJobCxls: make(map[JobId]context.CancelFunc), mutex: &sync.Mutex{}}
 	if r.cfg == nil {
 		r.cfg = NewDefaultConfig()
@@ -46,9 +45,6 @@ func NewRetrier(jobFunc func(inputs ...interface{}) error,
 	if r.Hostname == "" {
 		r.Hostname = "hostname0"
 	}
-	if r.retrierName == "" {
-		r.retrierName = "/retrier0"
-	}
 	return r
 }
 
@@ -59,7 +55,7 @@ func NewRetrier(jobFunc func(inputs ...interface{}) error,
 func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 	j, err := r.Storage.TakeOrCreateJob(jobId, jobFuncInputs)
 	if err != nil {
-		return Job{}, fmt.Errorf("error storage TakeOrCreateJob: %w", err)
+		return Job{}, fmt.Errorf("storage TakeOrCreateJob: %w", err)
 	}
 
 	stopCtx, cxl := context.WithCancel(context.Background())
@@ -93,7 +89,7 @@ func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 		}
 		err = r.Storage.UpdateJob(j)
 		if err != nil {
-			return j, fmt.Errorf("error storage UpdateJob: %w", err)
+			return j, fmt.Errorf("storage UpdateJob: %w", err)
 		}
 		if j.Status == Stopped {
 			return j, nil
@@ -105,7 +101,7 @@ func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 			j.Status = Stopped
 			err = r.Storage.UpdateJob(j)
 			if err != nil {
-				return j, fmt.Errorf("error storage UpdateJob: %w", err)
+				return j, fmt.Errorf("storage UpdateJob: %w", err)
 			}
 			return j, nil
 		}
@@ -132,17 +128,17 @@ func (r Retrier) LoopTakeQueueJobs() {
 		}
 
 		_, err := r.Storage.RequeueHangingJobs()
-		if err != nil {
+		if err != nil { // TODO: log RequeueHangingJobs error
 			time.Sleep(coolDown)
 			continue
 		}
 		jobs, err := r.Storage.TakeJobs()
-		if err != nil {
+		if err != nil { // TODO: log TakeJobs error
 			time.Sleep(coolDown)
 			continue
 		}
-		for _, job := range jobs {
-			r.Do(job.Id)
+		for _, jobId := range jobs {
+			r.Do(jobId)
 		}
 	}
 }
@@ -228,6 +224,11 @@ func (j Job) AllErrorsStr() string {
 	return string(bs)
 }
 
+func (j Job) JsonMarshal() string {
+	bs, _ := json.Marshal(j)
+	return string(bs)
+}
+
 type JobId string     // unique
 type JobStatus string // enum
 
@@ -254,6 +255,6 @@ type Storage interface {
 	// status to queue. Costly func, should run once per minutes.
 	RequeueHangingJobs() (nRequeueJobs int, err error)
 	// take all queuing jobs to run, update the jobs status to running
-	TakeJobs() ([]Job, error)
+	TakeJobs() ([]JobId, error)
 	DeleteStoppedJobs() (nDeletedJobs int, err error)
 }
