@@ -240,6 +240,7 @@ func (s EtcdStorage) DeleteStoppedJobs() (int, error) {
 }
 
 func (s EtcdStorage) lock() error {
+	// TODO: clientv3 sometime panic with small retrier Delay
 	return s.mutex.Lock(context.TODO())
 }
 

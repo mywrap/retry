@@ -64,7 +64,7 @@ func TestEtcdStorage(t *testing.T) {
 		go func() {
 			defer wg.Add(-1)
 			if rand.Intn(100) < 50 {
-				time.Sleep(r.cfg.DelayType(1+rand.Intn(5), r.cfg))
+				//time.Sleep(r.cfg.DelayType(1+rand.Intn(5), r.cfg))
 				err := r.Stop(JobId(txId))
 				if err != nil && err != ErrJobNotRunning {
 					t.Errorf("error retrier stop: %v", err)
