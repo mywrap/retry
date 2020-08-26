@@ -1,6 +1,7 @@
 package retry
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,13 +16,13 @@ import (
 // Storage (etcd) so others machine (or restarted machine) can continue the jobs
 // after a crash.
 type Retrier struct {
-	jobFunc      func(inputs ...interface{}) error
-	cfg          *Config
-	Storage      Storage
-	retrierName  string // all machines in a cluster share this name
-	Hostname     string
-	stopJobChans map[JobId]chan bool
-	mutex        *sync.Mutex // for map stopJobChans
+	jobFunc     func(inputs ...interface{}) error
+	cfg         *Config
+	Storage     Storage
+	retrierName string // all machines in a cluster share this name
+	Hostname    string
+	stopJobCxls map[JobId]context.CancelFunc
+	mutex       *sync.Mutex // for map stopJobCxls
 }
 
 // :param jobFunc: inputs must be JSONable if using persist Storage
@@ -30,9 +31,12 @@ func NewRetrier(jobFunc func(inputs ...interface{}) error,
 	cfg *Config, storage Storage, retrierName string) *Retrier {
 	r := &Retrier{
 		jobFunc: jobFunc, cfg: cfg, Storage: storage, retrierName: retrierName,
-		stopJobChans: make(map[JobId]chan bool), mutex: &sync.Mutex{}}
+		stopJobCxls: make(map[JobId]context.CancelFunc), mutex: &sync.Mutex{}}
 	if r.cfg == nil {
 		r.cfg = NewDefaultConfig()
+	}
+	if r.cfg.DelayType == nil {
+		r.cfg.DelayType = ExpBackOffDelay
 	}
 	if r.Storage == nil {
 		r.Storage = NewMemoryStorage()
@@ -55,13 +59,13 @@ func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 		return Job{}, fmt.Errorf("storage TakeOrCreateJob: %w", err)
 	}
 
-	stopJobChan := make(chan bool)
+	stopCtx, cxl := context.WithCancel(context.Background())
 	r.mutex.Lock()
-	r.stopJobChans[j.Id] = stopJobChan
+	r.stopJobCxls[j.Id] = cxl
 	r.mutex.Unlock()
 	defer func() {
 		r.mutex.Lock()
-		delete(r.stopJobChans, j.Id)
+		delete(r.stopJobCxls, j.Id)
 		r.mutex.Unlock()
 	}()
 	for {
@@ -98,7 +102,7 @@ func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 		select {
 		case <-time.After(j.NextDelay):
 			continue
-		case <-stopJobChan:
+		case <-stopCtx.Done():
 			j.Status = Stopped
 			err = r.Storage.UpdateJob(j)
 			if err != nil {
@@ -135,17 +139,13 @@ func (r Retrier) LoopTakeQueueJobs() {
 
 func (r Retrier) Stop(jobId JobId) error {
 	r.mutex.Lock()
-	stopJobChan, found := r.stopJobChans[jobId]
+	stopJobCxl, found := r.stopJobCxls[jobId]
 	r.mutex.Unlock()
 	if !found {
 		return ErrJobNotRunning
 	}
-	select {
-	case stopJobChan <- true:
-		return nil
-	case <-time.After(1 * time.Second):
-		return ErrUnreachable
-	}
+	stopJobCxl()
+	return nil
 }
 
 // Config for Retrier
@@ -248,7 +248,6 @@ var (
 	ErrJobRan         = errors.New("job ran")
 	ErrJobStopped     = errors.New("job stopped")
 	ErrJobNotRunning  = errors.New("job is not running on this machine")
-	ErrUnreachable    = errors.New("something went wrong :v")
 	errNotImplemented = errors.New("not implemented")
 )
 

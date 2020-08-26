@@ -14,3 +14,4 @@ profile*.pdf
 
 
 *.csv
+.~lock*#
