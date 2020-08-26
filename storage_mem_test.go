@@ -83,6 +83,10 @@ func TestRetrierMemoryStorage2(t *testing.T) {
 	const nJobs = 2000
 	wg := &sync.WaitGroup{}
 	didJobs := make([]Job, nJobs)
+	nManuallyStoppeds := struct {
+		sync.Mutex
+		val int
+	}{}
 	for i := 0; i < nJobs; i++ {
 		txId := gofast.UUIDGenNoHyphen()
 		wg.Add(1)
@@ -102,26 +106,27 @@ func TestRetrierMemoryStorage2(t *testing.T) {
 			}
 		}(i)
 		// random stop job
+		wg.Add(1)
 		go func() {
+			defer wg.Add(-1)
 			if rand.Intn(100) < 50 {
 				time.Sleep(r.cfg.DelayType(1+rand.Intn(5), r.cfg))
 				err := r.Stop(JobId(txId))
 				if err != nil && err != ErrJobNotRunning {
 					t.Errorf("error retrier stop: %v", err)
 				}
+				if err == nil {
+					nManuallyStoppeds.Lock()
+					nManuallyStoppeds.val++
+					nManuallyStoppeds.Unlock()
+				}
 			}
 		}()
 	}
 	wg.Wait()
-	nNotDoneJobs := 0
-	for _, job := range didJobs {
-		if job.LastErr() != nil {
-			nNotDoneJobs += 1
-		}
-	}
-	t.Logf("nNotDoneJobs: %v", nNotDoneJobs)
-	if nNotDoneJobs < nJobs/5 {
-		t.Errorf("too small number of not done jobs: %v", nNotDoneJobs)
+	t.Logf("nManuallyStoppeds: %v", nManuallyStoppeds.val)
+	if nManuallyStoppeds.val < 1 {
+		t.Errorf("too small nManuallyStoppeds: %v", nManuallyStoppeds.val)
 	}
 	if l1, l2 := len(memSto.jobs), memSto.idxStatusNextTry.Len(); l1 != nJobs || l2 != nJobs {
 		t.Errorf("unexpected nJobs: real: %v, %v, expected: %v", l1, l2, nJobs)

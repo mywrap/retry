@@ -22,7 +22,7 @@ type EtcdStorage struct {
 // etcd client
 const (
 	timeout0            = 5 * time.Second
-	pfxLock             = "/lock/"
+	pfxLock             = "/lock"               // must not follow by "/"
 	pfxJob              = "/job/"               // save jsoned job
 	pfxIdxStatusNextTry = "/idx/statusNextTry/" // save jobId
 )
