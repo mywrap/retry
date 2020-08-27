@@ -82,25 +82,19 @@ func TestRetrierMemoryStorage2(t *testing.T) {
 	memSto := r.Storage.(*MemoryStorage)
 	const nJobs = 2000
 	wg := &sync.WaitGroup{}
-	didJobs := make([]Job, nJobs)
-	nManuallyStoppeds := struct {
-		sync.Mutex
-		val int
-	}{}
 	for i := 0; i < nJobs; i++ {
 		txId := gofast.UUIDGenNoHyphen()
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Add(-1)
-			didJob, err := r.Do(JobId(txId), txId, time.Now().Format(time.RFC3339))
+			_, err := r.Do(JobId(txId), txId, time.Now().Format(time.RFC3339))
 			if err != nil {
 				t.Errorf("error retrier do: %v", err)
 			}
-			didJobs[i] = didJob
 			// random do job again
 			if rand.Intn(100) < 20 {
 				_, err := r.Do(JobId(txId), txId, time.Now().Format(time.RFC3339))
-				if !errors.Is(err, ErrJobRunningOrStopped) {
+				if !errors.Is(err, ErrDuplicateJob) {
 					t.Errorf("unexpected error retrier do: %v", err)
 				}
 			}
@@ -115,19 +109,18 @@ func TestRetrierMemoryStorage2(t *testing.T) {
 				if err != nil && err != ErrJobNotRunning {
 					t.Errorf("error retrier stop: %v", err)
 				}
-				if err == nil {
-					nManuallyStoppeds.Lock()
-					nManuallyStoppeds.val++
-					nManuallyStoppeds.Unlock()
-				}
 			}
 		}()
 	}
 	wg.Wait()
-	t.Logf("nManuallyStoppeds: %v", nManuallyStoppeds.val)
-	if nManuallyStoppeds.val < 1 {
+	if r.nDoOKJobs+r.nStopOKJobs != nJobs {
+		t.Errorf("error number of done jobs: %v, expected: %v",
+			r.nDoOKJobs+r.nStopOKJobs, nJobs)
+	}
+	//t.Logf("nManuallyStoppeds: %v", r.nStopOKJobs)
+	if r.nStopOKJobs < 1 {
 		t.Errorf("small nManuallyStoppeds: %v, expected: %v",
-			nManuallyStoppeds.val, nJobs/3)
+			r.nStopOKJobs, nJobs/3)
 	}
 	if l1, l2 := len(memSto.jobs), memSto.idxStatusNextTry.Len(); l1 != nJobs || l2 != nJobs {
 		t.Errorf("unexpected nJobs: real: %v, %v, expected: %v", l1, l2, nJobs)

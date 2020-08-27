@@ -3,7 +3,6 @@ package retry
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"math/rand"
 	"os"
@@ -39,10 +38,10 @@ func getInt64(cli *clientv3.Client, key string) int64 {
 }
 
 func TestEtcdLockSum(t *testing.T) {
-	const nWorkers = 30
+	const nWorkers = 50
 	const sharedSumKey = "/TestEtcdLockSum/sharedSum"
 	const lockKey = "/TestEtcdLockSum/lock"
-	const expectedSum = int64(600)
+	const expectedSum = int64(500)
 	cli0, err := clientv3.New(etcdConfig0)
 	if err != nil {
 		t.Fatalf("error etcd clientv3 New: %v", err)
@@ -67,15 +66,17 @@ func TestEtcdLockSum(t *testing.T) {
 			}
 			mutex := concurrency.NewMutex(session, lockKey)
 			for k := 0; k < int(expectedSum/nWorkers); k++ {
-				err := mutex.Lock(context.Background())
-				if err != nil {
+				if err := mutex.Lock(context.Background()); err != nil {
 					t.Error(err)
 				}
 				sum := getInt64(cli1, sharedSumKey)
 				sum += 1
 				_, err = cli1.Put(context.Background(), sharedSumKey,
-					fmt.Sprintf("%v", sum))
+					strconv.FormatInt(sum, 10))
 				if err != nil {
+					t.Error(err)
+				}
+				if err := mutex.Unlock(context.Background()); err != nil {
 					t.Error(err)
 				}
 			}
@@ -90,17 +91,17 @@ func TestEtcdLockSum(t *testing.T) {
 	}
 }
 
-func TestEtcdStorage(t *testing.T) {
+func TestEtcdStorageNewRetrier(t *testing.T) {
 	etcdCli, err := clientv3.New(etcdConfig0)
 	if err != nil {
 		t.Fatalf("error etcd clientv3 New: %v", err)
 	}
 	defer etcdCli.Close()
-
-	etcdSto, err := NewEtcdStorage(etcdCli, "/retrierTest")
+	etcdSto, err := NewEtcdStorage(etcdCli, "/retrierTestNew"+gofast.GenUUID())
 	if err != nil {
 		t.Fatalf("error NewEtcdStorage: %v", err)
 	}
+	t.Logf("ret NewEtcdStorage: %v, %v", etcdSto, err)
 
 	cfg := &Config{MaxAttempts: 10,
 		Delay: 100 * time.Millisecond, MaxJitter: 5 * time.Millisecond,
@@ -108,26 +109,14 @@ func TestEtcdStorage(t *testing.T) {
 	r := NewRetrier(jobCheckPayment, cfg, etcdSto,
 		log.New(os.Stdout, "", log.Lshortfile|log.Lmicroseconds))
 
-	if true {
-		n, err := etcdSto.deleteAllKey()
-		r.log.Printf("etcdSto deleteAllKey: %v, %v\n", n, err)
-		if err != nil {
-			t.Error(err)
-		}
-	} else {
-		r.LoopTakeQueueJobs()
+	n, err := etcdSto.deleteAllKey()
+	r.log.Printf("etcdSto deleteAllKey: %v, %v\n", n, err)
+	if err != nil {
+		t.Error(err)
 	}
 
 	const nJobs = 1000
 	wg := &sync.WaitGroup{}
-	nDidJobs := struct {
-		sync.Mutex
-		val int
-	}{}
-	nManuallyStoppeds := struct {
-		sync.Mutex
-		val int
-	}{}
 	for i := 0; i < nJobs; i++ {
 		txId := gofast.UUIDGenNoHyphen()
 		wg.Add(1)
@@ -137,13 +126,10 @@ func TestEtcdStorage(t *testing.T) {
 			if err != nil {
 				t.Errorf("error retrier do: %v", err)
 			}
-			nDidJobs.Lock()
-			nDidJobs.val++
-			nDidJobs.Unlock()
 			// random do job again
 			if rand.Intn(100) < 20 {
 				_, err := r.Do(JobId(txId), txId, time.Now().Format(time.RFC3339Nano))
-				if !errors.Is(err, ErrJobRunningOrStopped) {
+				if !errors.Is(err, ErrDuplicateJob) {
 					t.Errorf("error retrier do2: %v", err)
 				}
 			}
@@ -159,23 +145,60 @@ func TestEtcdStorage(t *testing.T) {
 				if err != nil && err != ErrJobNotRunning {
 					t.Errorf("error retrier stop: %v", err)
 				}
-				if err == nil {
-					nManuallyStoppeds.Lock()
-					nManuallyStoppeds.val++
-					nManuallyStoppeds.Unlock()
-				}
 			}
 		}()
 	}
 	wg.Wait()
-	if nDidJobs.val != nJobs {
-		t.Errorf("error nDidJobs: %v, nJobs: %v", nDidJobs, nJobs)
+	if r.nDoOKJobs+r.nStopOKJobs != nJobs {
+		t.Errorf("error nDonedJobs: %v, nJobs: %v", r.nDoOKJobs+r.nStopOKJobs, nJobs)
 	}
-	r.log.Printf("nManuallyStoppeds: %v\n", nManuallyStoppeds.val)
-	if nManuallyStoppeds.val < 1 {
+	r.log.Printf("nManuallyStoppeds: %v\n", r.nStopOKJobs)
+	if r.nStopOKJobs < 1 {
 		t.Errorf("error small nManuallyStoppeds: %v, expected: %v",
-			nManuallyStoppeds.val, nJobs/5)
+			r.nStopOKJobs, nJobs/5)
 	}
-
 	// printf '\ec'; etcdctl get --prefix /retrierTest/job
+}
+
+func TestEtcdStorageResumeRetrier(t *testing.T) {
+	etcdCli, err := clientv3.New(etcdConfig0)
+	if err != nil {
+		t.Fatalf("error etcd clientv3 New: %v", err)
+	}
+	defer etcdCli.Close()
+
+	etcdSto, err := NewEtcdStorage(etcdCli, "/retrierTestResume")
+	if err != nil {
+		t.Fatalf("error NewEtcdStorage: %v", err)
+	}
+	t.Logf("ret NewEtcdStorage: %v, %v", etcdSto, err)
+
+	cfg := &Config{MaxAttempts: 10,
+		Delay: 100 * time.Millisecond, MaxJitter: 5 * time.Millisecond,
+	}
+	r := NewRetrier(jobCheckPayment, cfg, etcdSto,
+		log.New(os.Stdout, "", log.Lshortfile|log.Lmicroseconds))
+
+	go r.LoopTakeQueueJobs()
+	t.Logf("in queue keys: %v", etcdSto.keyPfx+pfxIdxStatusNextTry+Queue)
+
+	const nJobs = 100
+	wg := &sync.WaitGroup{}
+	for i := 0; i < nJobs; i++ {
+		txId := gofast.UUIDGenNoHyphen()
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Add(-1)
+			_, err := r.Do(JobId(txId), txId, time.Now().Format(time.RFC3339Nano))
+			if err != nil {
+				t.Errorf("error retrier do: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	t.Logf("nDoOKJobs: %v", r.nDoOKJobs)
+	time.Sleep(1 * time.Second)
+	if r.nDoErrJobs > 0 {
+		t.Errorf("nDoErrJobs: %v", r.nDoErrJobs)
+	}
 }

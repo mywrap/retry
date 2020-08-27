@@ -21,7 +21,10 @@ type Retrier struct {
 	Storage     Storage
 	Hostname    string
 	stopJobCxls map[JobId]context.CancelFunc
-	mutex       *sync.Mutex // for map stopJobCxls
+	mutex       *sync.Mutex // for map stopJobCxls, nDoneJobs, nManuallyStops
+	nDoOKJobs   int         // for testing, number of Do returned nil error
+	nStopOKJobs int         // for testing, number of Stop returned nil error
+	nDoErrJobs  int         // for testing, number of Do returned storage error
 	log         Logger
 }
 
@@ -52,17 +55,21 @@ func NewRetrier(jobFunc func(inputs ...interface{}) error,
 	return r
 }
 
-// Do runs a job (newly created or loaded from queue jobs in Storage),
-// if returned error is not nil or ErrJobRunningOrStopped, user should Do again
-// to ensure the job created
-// :params jobFuncInputs: will be ignored if the jobId existed in Storage
-func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
+// Do runs a new job. If returned error is not nil and not ErrDuplicateJob, user
+// should Do again to ensure the job created.
+func (r *Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 	//r.log.Printf("doing JobId %v\n", jobId)
-	j, err := r.Storage.TakeOrCreateJob(jobId, jobFuncInputs)
+	j, err := r.Storage.CreateJob(jobId, jobFuncInputs)
 	if err != nil {
-		return Job{}, fmt.Errorf("storage TakeOrCreateJob: %w", err)
+		r.mutex.Lock()
+		r.nDoErrJobs++
+		r.mutex.Unlock()
+		return Job{}, fmt.Errorf("storage CreateJob: %w", err)
 	}
+	return r.run(j)
+}
 
+func (r *Retrier) run(j Job) (Job, error) {
 	stopCtx, cxl := context.WithCancel(context.Background())
 	r.mutex.Lock()
 	r.stopJobCxls[j.Id] = cxl
@@ -95,9 +102,15 @@ func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 		}
 		err = r.Storage.UpdateJob(j)
 		if err != nil {
+			r.mutex.Lock()
+			r.nDoErrJobs++
+			r.mutex.Unlock()
 			return j, fmt.Errorf("storage UpdateJob: %w", err)
 		}
 		if j.Status == Stopped {
+			r.mutex.Lock()
+			r.nDoOKJobs++
+			r.mutex.Unlock()
 			return j, nil
 		}
 		select {
@@ -107,8 +120,14 @@ func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 			j.Status = Stopped
 			err = r.Storage.UpdateJob(j)
 			if err != nil {
+				r.mutex.Lock()
+				r.nDoErrJobs++
+				r.mutex.Unlock()
 				return j, fmt.Errorf("storage UpdateJob: %w", err)
 			}
+			r.mutex.Lock()
+			r.nStopOKJobs++
+			r.mutex.Unlock()
 			return j, nil
 		}
 	}
@@ -143,16 +162,37 @@ func (r Retrier) LoopTakeQueueJobs() {
 		if nRequeueJobs > 0 {
 			r.log.Printf("nRequeueJobs: %v\n", nRequeueJobs)
 		}
-		jobs, err := r.Storage.TakeJobs()
+		redoJobs, err := r.Storage.TakeJobs()
 		if err != nil {
 			r.log.Printf("error TakeJobs: %v\n", err)
 			time.Sleep(coolDown)
 			continue
 		}
-		for _, jobId := range jobs {
-			go r.Do(jobId)
+		for _, redoJob := range redoJobs {
+			go func(j Job) {
+				_, err := r.run(j)
+				if err != nil {
+					r.log.Printf("error redo job %v: %v\n", j.Id, err)
+				}
+			}(redoJob)
 		}
+		time.Sleep(coolDown)
 	}
+}
+
+type Storage interface {
+	// CreateJob creates a job with status running in the storage,
+	// returned error can be ErrDuplicateJob or underlying storage error.
+	CreateJob(jobId JobId, jobFuncInputs []interface{}) (Job, error)
+	// return error if job_Id is not existed
+	UpdateJob(Job) error
+	// check all running jobs, if a job lastAttempted too long time ago change
+	// it status to queue. Costly func, should run once per minutes.
+	RequeueHangingJobs() (nRequeueJobs int, err error)
+	// take all queuing jobs, update the jobs status to running
+	TakeJobs() ([]Job, error)
+	// clean up storage space
+	DeleteStoppedJobs() (nDeletedJobs int, err error)
 }
 
 // Config for Retrier
@@ -246,33 +286,16 @@ type JobStatus string // enum
 
 // JobStatus enum
 const (
-	Queue   = "QUEUE"
+	Queue   = "QUEUE" // hanging Running job will be changed to Queue
 	Running = "RUNNING"
 	Stopped = "STOPPED"
 )
 
 var (
-	ErrJobRunningOrStopped = errors.New("job is running or stopped")
-	ErrJobNotRunning       = errors.New("job is not running on this machine")
-	errNotImplemented      = errors.New("not implemented")
+	ErrDuplicateJob   = errors.New("duplicate jobId")
+	ErrJobNotRunning  = errors.New("job is not running on this machine")
+	errNotImplemented = errors.New("not implemented")
 )
-
-type Storage interface {
-	// read jobId from queue jobs (ignore jobFuncInputs), create if not existed,
-	// return err ErrJobRunningOrStopped or underlying storage error,
-	// update the jobs status to running
-	TakeOrCreateJob(jobId JobId, jobFuncInputs []interface{}) (Job, error)
-	// call after one attempt or when manually stop the job to update state
-	// of the job in storage
-	UpdateJob(Job) error
-	// Check all running jobs, if a job lastAttempted too long time ago change it
-	// status to queue. Costly func, should run once per minutes.
-	RequeueHangingJobs() (nRequeueJobs int, err error)
-	// take all queuing jobs to run, update the jobs status to running
-	TakeJobs() ([]JobId, error)
-	// clean up storage space
-	DeleteStoppedJobs() (nDeletedJobs int, err error)
-}
 
 type Logger interface {
 	Printf(format string, v ...interface{})

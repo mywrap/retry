@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"errors"
+
 	"github.com/petar/GoLLRB/llrb"
 )
 
@@ -24,21 +26,16 @@ func NewMemoryStorage() *MemoryStorage {
 		mutex:            &sync.Mutex{},
 	}
 }
-func (s *MemoryStorage) TakeOrCreateJob(jobId JobId, jobFuncInputs []interface{}) (
+func (s *MemoryStorage) CreateJob(jobId JobId, jobFuncInputs []interface{}) (
 	Job, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	job, found := s.jobs[jobId]
+	_, found := s.jobs[jobId]
 	if found {
-		if job.Status == Running || job.Status == Stopped {
-			return Job{}, ErrJobRunningOrStopped
-		}
-		s.idxStatusNextTry.Delete(job) // update index for queuing index
-	} else { // not found, create new job
-		job = NewJobInTree(&Job{JobFuncInputs: jobFuncInputs,
-			Id: jobId, Status: Queue, LastTried: time.Now()})
+		return Job{}, ErrDuplicateJob
 	}
-	job.Status = Running
+	job := NewJobInTree(&Job{JobFuncInputs: jobFuncInputs,
+		Id: jobId, Status: Running, LastTried: time.Now()})
 	job.calcKeyStatusNextTry()
 	s.jobs[jobId] = job
 	s.idxStatusNextTry.InsertNoReplace(job)
@@ -48,9 +45,10 @@ func (s *MemoryStorage) UpdateJob(job Job) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	oldJob, found := s.jobs[job.Id]
-	if found {
-		s.idxStatusNextTry.Delete(oldJob)
+	if !found {
+		return errors.New("jobId not found")
 	}
+	s.idxStatusNextTry.Delete(oldJob)
 	updatedJob := NewJobInTree(&job)
 	s.jobs[job.Id] = updatedJob
 	s.idxStatusNextTry.InsertNoReplace(updatedJob)
@@ -59,7 +57,7 @@ func (s *MemoryStorage) UpdateJob(job Job) error {
 func (s *MemoryStorage) RequeueHangingJobs() (int, error) {
 	return 0, nil
 }
-func (s *MemoryStorage) TakeJobs() ([]JobId, error) {
+func (s *MemoryStorage) TakeJobs() ([]Job, error) {
 	return nil, nil
 }
 func (s *MemoryStorage) DeleteStoppedJobs() (int, error) {
@@ -73,8 +71,8 @@ func (s *MemoryStorage) DeleteStoppedJobs() (int, error) {
 	}
 	s.idxStatusNextTry.AscendRange(
 		NewJobInTree(&Job{Status: Stopped}),
-		NewJobInTree(&Job{Status: Stopped,
-			LastTried: time.Now().Add(999 * time.Hour), NextDelay: 0}), iterFunc)
+		NewJobInTree(&Job{Status: Stopped, LastTried: time.Now().Add(999 * time.Hour)}),
+		iterFunc)
 	for _, job := range jobs {
 		s.idxStatusNextTry.Delete(job)
 		delete(s.jobs, job.Id)

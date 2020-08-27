@@ -21,7 +21,7 @@ type EtcdStorage struct {
 
 // etcd client
 const (
-	timeout0            = 5 * time.Second
+	timeout0            = 25 * time.Second
 	pfxLock             = "/lock"
 	pfxJob              = "/job/"               // save jsoned job
 	pfxIdxStatusNextTry = "/idx/statusNextTry/" // save jobId
@@ -37,42 +37,33 @@ func NewEtcdStorage(cli *clientv3.Client, keyPfx string) (*EtcdStorage, error) {
 		return nil, err
 	}
 	s.mutex = concurrency.NewMutex(session, s.keyPfx+pfxLock)
-	err = s.lock()
-	if err != nil {
+
+	if err := s.lock(); err != nil {
 		return nil, fmt.Errorf("error try 1st lock: %v", err)
 	}
-	err = s.unlock()
-	if err != nil {
+	if err := s.unlock(); err != nil {
 		return nil, fmt.Errorf("error try 1st unlock: %v", err)
 	}
+
 	return s, nil
 }
 
-func (s EtcdStorage) TakeOrCreateJob(jobId JobId, jobFuncInputs []interface{}) (
+func (s EtcdStorage) CreateJob(jobId JobId, jobFuncInputs []interface{}) (
 	Job, error) {
-	err := s.lock()
-	if err != nil {
+	if err := s.lock(); err != nil {
 		return Job{}, fmt.Errorf("cannot lock: %v", err)
 	}
 	defer s.unlock()
 
 	job, err := s.getJob(jobId)
-	if err != nil && err != errNoKeys {
-		return Job{}, err
-	} else if err == nil {
-		if job.Status == Running || job.Status == Stopped {
-			return job, ErrJobRunningOrStopped
+	if err != errNoKeys {
+		if err == nil {
+			return Job{}, ErrDuplicateJob
 		}
-		// remove the loaded job from queuing index
-		ctx, cxl := context.WithTimeout(context.Background(), timeout0)
-		s.cli.Delete(ctx, s.keyIdxStatusNextTry(job))
-		cxl()
-	} else { // errNoKeys, create new job
-		job = Job{JobFuncInputs: jobFuncInputs,
-			Id: jobId, Status: Queue, LastTried: time.Now()}
+		return Job{}, err
 	}
-
-	job.Status = Running
+	job = Job{JobFuncInputs: jobFuncInputs,
+		Id: jobId, Status: Running, LastTried: time.Now()}
 	ctx1, cxl1 := context.WithTimeout(context.Background(), timeout0)
 	_, err = s.cli.Put(ctx1, s.keyJob(jobId), job.JsonMarshal())
 	cxl1()
@@ -80,7 +71,8 @@ func (s EtcdStorage) TakeOrCreateJob(jobId JobId, jobFuncInputs []interface{}) (
 		return Job{}, fmt.Errorf("clientv3 put key %v: %v", s.keyJob(jobId), err)
 	}
 	ctx2, cxl2 := context.WithTimeout(context.Background(), timeout0)
-	_, err = s.cli.Put(ctx2, s.keyIdxStatusNextTry(job), string(jobId))
+	// TODO: handle Put idx err after successfully Put job
+	s.cli.Put(ctx2, s.keyIdxStatusNextTry(job), string(jobId))
 	cxl2()
 	return job, nil
 }
@@ -107,7 +99,7 @@ func (s EtcdStorage) getJob(jobId JobId) (Job, error) {
 func (s EtcdStorage) UpdateJob(job Job) error {
 	oldJob, err := s.getJob(job.Id)
 	if err != nil && err != errNoKeys {
-		return fmt.Errorf("clientv3 get key %v: %v", job.Id, err)
+		return fmt.Errorf("getJob %v: %v", job.Id, err)
 	}
 	if err == nil {
 		ctx, cxl := context.WithTimeout(context.Background(), timeout0)
@@ -126,15 +118,16 @@ func (s EtcdStorage) UpdateJob(job Job) error {
 	cxl2()
 	return nil
 }
+
+// hanging jobs have keyIdxStatusNextTry < time_Now
 func (s EtcdStorage) RequeueHangingJobs() (int, error) {
-	err := s.lock()
-	if err != nil {
+	if err := s.lock(); err != nil {
 		return 0, fmt.Errorf("cannot lock: %v", err)
 	}
 	defer s.unlock()
 
 	beginKey := s.keyPfx + pfxIdxStatusNextTry + string(Running)
-	endKey := beginKey + time.Now().Format(fmtRFC3339Mili)
+	endKey := beginKey + "/" + time.Now().Format(fmtRFC3339Mili)
 	ctx, cxl := context.WithTimeout(context.Background(), timeout0)
 	resp, err := s.cli.Get(ctx, beginKey, clientv3.WithRange(endKey))
 	cxl()
@@ -156,6 +149,7 @@ func (s EtcdStorage) RequeueHangingJobs() (int, error) {
 			if err != nil {
 				return
 			}
+			fmt.Printf("debug hanging job: %s, %#v, %v\n", kv.Key, job, job.LastTried)
 			job.Status = Queue
 			err = s.UpdateJob(job)
 			if err != nil {
@@ -169,9 +163,8 @@ func (s EtcdStorage) RequeueHangingJobs() (int, error) {
 	wg.Wait()
 	return updated.val, nil
 }
-func (s EtcdStorage) TakeJobs() ([]JobId, error) {
-	err := s.lock()
-	if err != nil {
+func (s EtcdStorage) TakeJobs() ([]Job, error) {
+	if err := s.lock(); err != nil {
 		return nil, fmt.Errorf("cannot lock: %v", err)
 	}
 	defer s.unlock()
@@ -185,7 +178,7 @@ func (s EtcdStorage) TakeJobs() ([]JobId, error) {
 	}
 
 	updated := struct {
-		val []JobId
+		val []Job
 		mu  sync.Mutex
 	}{}
 	wg := &sync.WaitGroup{}
@@ -202,12 +195,15 @@ func (s EtcdStorage) TakeJobs() ([]JobId, error) {
 			err = s.UpdateJob(job)
 			if err == nil {
 				updated.mu.Lock()
-				updated.val = append(updated.val, job.Id)
+				updated.val = append(updated.val, job)
 				updated.mu.Unlock()
 			}
 		}(kv)
 	}
 	wg.Wait()
+	ctx2, cxl2 := context.WithTimeout(context.Background(), timeout0)
+	s.cli.Delete(ctx2, beginKey, clientv3.WithPrefix())
+	cxl2()
 	return updated.val, nil
 }
 func (s EtcdStorage) DeleteStoppedJobs() (int, error) {
@@ -274,10 +270,15 @@ func (s EtcdStorage) keyJob(jobId JobId) string {
 }
 
 func (s EtcdStorage) keyIdxStatusNextTry(j Job) string {
+	nextHeartbeat := 3 * j.NextDelay
+	if nextHeartbeat < 5*time.Second {
+		// prevent running jobs can be treated as hanging if NextDelay is too small
+		nextHeartbeat = 5 * time.Second
+	}
 	return fmt.Sprintf("%v%v/%v/%v",
 		s.keyPfx+pfxIdxStatusNextTry,
 		j.Status,
-		j.LastTried.Add(3*j.NextDelay).Format(fmtRFC3339Mili),
+		j.LastTried.Add(nextHeartbeat).Format(fmtRFC3339Mili),
 		j.Id)
 }
 
