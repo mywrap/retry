@@ -22,15 +22,16 @@ type Retrier struct {
 	Hostname    string
 	stopJobCxls map[JobId]context.CancelFunc
 	mutex       *sync.Mutex // for map stopJobCxls
+	log         Logger
 }
 
 // NewRetrier init a retrier, default save retrying state to memory.
 // :param jobFunc: inputs must be JSONable if using persist Storage
 // :param retrierName: optional, used as a namespace in persist Storage
 func NewRetrier(jobFunc func(inputs ...interface{}) error,
-	cfg *Config, storage Storage) *Retrier {
+	cfg *Config, storage Storage, logger Logger) *Retrier {
 	r := &Retrier{
-		jobFunc: jobFunc, cfg: cfg, Storage: storage,
+		jobFunc: jobFunc, cfg: cfg, Storage: storage, log: logger,
 		stopJobCxls: make(map[JobId]context.CancelFunc), mutex: &sync.Mutex{}}
 	if r.cfg == nil {
 		r.cfg = NewDefaultConfig()
@@ -40,6 +41,9 @@ func NewRetrier(jobFunc func(inputs ...interface{}) error,
 	}
 	if r.Storage == nil {
 		r.Storage = NewMemoryStorage()
+	}
+	if r.log == nil {
+		r.log = &EmptyLogger{}
 	}
 	r.Hostname, _ = os.Hostname()
 	if r.Hostname == "" {
@@ -53,6 +57,7 @@ func NewRetrier(jobFunc func(inputs ...interface{}) error,
 // to ensure the job created
 // :params jobFuncInputs: will be ignored if the jobId existed in Storage
 func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
+	//r.log.Printf("doing JobId %v\n", jobId)
 	j, err := r.Storage.TakeOrCreateJob(jobId, jobFuncInputs)
 	if err != nil {
 		return Job{}, fmt.Errorf("storage TakeOrCreateJob: %w", err)
@@ -62,6 +67,7 @@ func (r Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 	r.mutex.Lock()
 	r.stopJobCxls[j.Id] = cxl
 	r.mutex.Unlock()
+	//r.log.Printf("debug set stopJobCxls: %v\n", j.Id)
 	defer func() {
 		r.mutex.Lock()
 		delete(r.stopJobCxls, j.Id)
@@ -121,24 +127,30 @@ func (r Retrier) Stop(jobId JobId) error {
 
 // LoopTakeQueueJobs is meaningless on MemoryStorage because queue jobs do not exist
 func (r Retrier) LoopTakeQueueJobs() {
+	r.log.Println("start LoopTakeQueueJobs")
 	for {
 		coolDown := r.cfg.Delay // have to call time.Sleep(coolDown) in each loop
 		if coolDown < 1*time.Minute {
 			coolDown = 1 * time.Minute
 		}
 
-		_, err := r.Storage.RequeueHangingJobs()
-		if err != nil { // TODO: log RequeueHangingJobs error
+		nRequeueJobs, err := r.Storage.RequeueHangingJobs()
+		if err != nil {
+			r.log.Printf("error RequeueHangingJobs: %v\n", err)
 			time.Sleep(coolDown)
 			continue
 		}
+		if nRequeueJobs > 0 {
+			r.log.Printf("nRequeueJobs: %v\n", nRequeueJobs)
+		}
 		jobs, err := r.Storage.TakeJobs()
-		if err != nil { // TODO: log TakeJobs error
+		if err != nil {
+			r.log.Printf("error TakeJobs: %v\n", err)
 			time.Sleep(coolDown)
 			continue
 		}
 		for _, jobId := range jobs {
-			r.Do(jobId)
+			go r.Do(jobId)
 		}
 	}
 }
@@ -250,11 +262,28 @@ type Storage interface {
 	// return err ErrJobRunningOrStopped or underlying storage error,
 	// update the jobs status to running
 	TakeOrCreateJob(jobId JobId, jobFuncInputs []interface{}) (Job, error)
-	UpdateJob(Job) error // call after one attempt or when manually stop the job
+	// call after one attempt or when manually stop the job to update state
+	// of the job in storage
+	UpdateJob(Job) error
 	// Check all running jobs, if a job lastAttempted too long time ago change it
 	// status to queue. Costly func, should run once per minutes.
 	RequeueHangingJobs() (nRequeueJobs int, err error)
 	// take all queuing jobs to run, update the jobs status to running
 	TakeJobs() ([]JobId, error)
+	// clean up storage space
 	DeleteStoppedJobs() (nDeletedJobs int, err error)
 }
+
+type Logger interface {
+	Printf(format string, v ...interface{})
+	Println(v ...interface{})
+	Fatal(v ...interface{})
+	Fatalf(format string, v ...interface{})
+}
+
+type EmptyLogger struct{} // EmptyLogger does not log anything
+
+func (l EmptyLogger) Println(v ...interface{})               {}
+func (l EmptyLogger) Printf(format string, v ...interface{}) {}
+func (l EmptyLogger) Fatal(v ...interface{})                 {}
+func (l EmptyLogger) Fatalf(format string, v ...interface{}) {}

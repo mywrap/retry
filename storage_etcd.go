@@ -22,7 +22,7 @@ type EtcdStorage struct {
 // etcd client
 const (
 	timeout0            = 5 * time.Second
-	pfxLock             = "/lock"               // must not follow by "/"
+	pfxLock             = "/lock"
 	pfxJob              = "/job/"               // save jsoned job
 	pfxIdxStatusNextTry = "/idx/statusNextTry/" // save jobId
 )
@@ -30,13 +30,21 @@ const (
 // :param keyPfx: different retriers must have different keyPfxs
 func NewEtcdStorage(cli *clientv3.Client, keyPfx string) (*EtcdStorage, error) {
 	s := &EtcdStorage{cli: cli, keyPfx: keyPfx}
-	//all locks created by this session have a TTL of 5s
+	//all locks created by this session have a TTL of timeout0
 	session, err := concurrency.NewSession(
 		cli, concurrency.WithTTL(int(timeout0.Seconds())))
 	if err != nil {
 		return nil, err
 	}
 	s.mutex = concurrency.NewMutex(session, s.keyPfx+pfxLock)
+	err = s.lock()
+	if err != nil {
+		return nil, fmt.Errorf("error try 1st lock: %v", err)
+	}
+	err = s.unlock()
+	if err != nil {
+		return nil, fmt.Errorf("error try 1st unlock: %v", err)
+	}
 	return s, nil
 }
 
@@ -169,9 +177,8 @@ func (s EtcdStorage) TakeJobs() ([]JobId, error) {
 	defer s.unlock()
 
 	beginKey := s.keyPfx + pfxIdxStatusNextTry + string(Queue)
-	endKey := beginKey + "/9999-99-99"
 	ctx, cxl := context.WithTimeout(context.Background(), timeout0)
-	resp, err := s.cli.Get(ctx, beginKey, clientv3.WithRange(endKey))
+	resp, err := s.cli.Get(ctx, beginKey, clientv3.WithPrefix())
 	cxl()
 	if err != nil {
 		return nil, fmt.Errorf("clientv3 get range: %v", err)
@@ -205,9 +212,8 @@ func (s EtcdStorage) TakeJobs() ([]JobId, error) {
 }
 func (s EtcdStorage) DeleteStoppedJobs() (int, error) {
 	beginKey := s.keyPfx + pfxIdxStatusNextTry + string(Stopped)
-	endKey := beginKey + "/9999-99-99"
 	ctx, cxl := context.WithTimeout(context.Background(), timeout0)
-	resp, err := s.cli.Get(ctx, beginKey, clientv3.WithRange(endKey))
+	resp, err := s.cli.Get(ctx, beginKey, clientv3.WithPrefix())
 	cxl()
 	if err != nil {
 		return 0, fmt.Errorf("clientv3 get range: %v", err)
@@ -234,13 +240,28 @@ func (s EtcdStorage) DeleteStoppedJobs() (int, error) {
 	}
 	wg.Wait()
 	ctx2, cxl2 := context.WithTimeout(context.Background(), timeout0)
-	s.cli.Delete(ctx2, beginKey, clientv3.WithRange(endKey))
+	s.cli.Delete(ctx2, beginKey, clientv3.WithPrefix())
 	cxl2()
 	return updated.val, nil
 }
 
-func (s EtcdStorage) lock() error {
-	// TODO: clientv3 sometime panic with small retrier Delay
+// delete all key with the storage's prefix, for testing
+func (s EtcdStorage) deleteAllKey() (int, error) {
+	ctx, cxl := context.WithTimeout(context.Background(), timeout0)
+	resp, err := s.cli.Delete(ctx, s.keyPfx, clientv3.WithPrefix())
+	cxl()
+	if err != nil {
+		return 0, err
+	}
+	return int(resp.Deleted), nil
+}
+
+func (s EtcdStorage) lock() (retErr error) {
+	defer func() { // sometime panic on clientv3 Lock tryAcquire
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("recover %v", r)
+		}
+	}()
 	return s.mutex.Lock(context.TODO())
 }
 

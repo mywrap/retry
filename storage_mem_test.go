@@ -21,7 +21,7 @@ func TestFibonacci(t *testing.T) {
 
 func callUnreliable(txId string, callAt string) (string, error) {
 	if rand.Intn(100) < 80 {
-		return "", errors.New("resource unavailable")
+		return "", errors.New("resourceUnavailable")
 	}
 	return "SUCCESS", nil
 }
@@ -40,7 +40,7 @@ func jobCheckPayment(inputs ...interface{}) error {
 func TestRetrierMemoryStorage1(t *testing.T) {
 	rand.Seed(time.Now().UnixNano())
 	cfg := &Config{MaxAttempts: 10, Delay: 10 * time.Millisecond}
-	r := NewRetrier(jobCheckPayment, cfg, nil)
+	r := NewRetrier(jobCheckPayment, cfg, nil, nil)
 	memSto := r.Storage.(*MemoryStorage)
 
 	const nJobs = 8000
@@ -78,7 +78,7 @@ func TestRetrierMemoryStorage1(t *testing.T) {
 func TestRetrierMemoryStorage2(t *testing.T) {
 	cfg := &Config{MaxAttempts: 10,
 		Delay: 50 * time.Millisecond, MaxJitter: 10 * time.Millisecond}
-	r := NewRetrier(jobCheckPayment, cfg, nil)
+	r := NewRetrier(jobCheckPayment, cfg, nil, nil)
 	memSto := r.Storage.(*MemoryStorage)
 	const nJobs = 2000
 	wg := &sync.WaitGroup{}
@@ -126,7 +126,8 @@ func TestRetrierMemoryStorage2(t *testing.T) {
 	wg.Wait()
 	t.Logf("nManuallyStoppeds: %v", nManuallyStoppeds.val)
 	if nManuallyStoppeds.val < 1 {
-		t.Errorf("too small nManuallyStoppeds: %v", nManuallyStoppeds.val)
+		t.Errorf("small nManuallyStoppeds: %v, expected: %v",
+			nManuallyStoppeds.val, nJobs/3)
 	}
 	if l1, l2 := len(memSto.jobs), memSto.idxStatusNextTry.Len(); l1 != nJobs || l2 != nJobs {
 		t.Errorf("unexpected nJobs: real: %v, %v, expected: %v", l1, l2, nJobs)
