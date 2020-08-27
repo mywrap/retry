@@ -149,7 +149,7 @@ func (s EtcdStorage) RequeueHangingJobs() (int, error) {
 			if err != nil {
 				return
 			}
-			fmt.Printf("debug hanging job: %s, %#v, %v\n", kv.Key, job, job.LastTried)
+			//fmt.Printf("debug hanging job: %s, %#v, %v\n", kv.Key, job, job.LastTried)
 			job.Status = Queue
 			err = s.UpdateJob(job)
 			if err != nil {

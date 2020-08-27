@@ -160,7 +160,8 @@ func TestEtcdStorageNewRetrier(t *testing.T) {
 	// printf '\ec'; etcdctl get --prefix /retrierTest/job
 }
 
-func TestEtcdStorageResumeRetrier(t *testing.T) {
+// run this func, suddenly terminate, run again to check LoopTakeQueueJobs
+func _TestEtcdStorageResumeRetrier(t *testing.T) {
 	etcdCli, err := clientv3.New(etcdConfig0)
 	if err != nil {
 		t.Fatalf("error etcd clientv3 New: %v", err)
@@ -196,8 +197,8 @@ func TestEtcdStorageResumeRetrier(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	t.Logf("nDoOKJobs: %v", r.nDoOKJobs)
 	time.Sleep(1 * time.Second)
+	t.Logf("nDoOKJobs: %v", r.nDoOKJobs)
 	if r.nDoErrJobs > 0 {
 		t.Errorf("nDoErrJobs: %v", r.nDoErrJobs)
 	}

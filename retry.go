@@ -145,7 +145,7 @@ func (r Retrier) Stop(jobId JobId) error {
 }
 
 // LoopTakeQueueJobs is meaningless on MemoryStorage because queue jobs do not exist
-func (r Retrier) LoopTakeQueueJobs() {
+func (r *Retrier) LoopTakeQueueJobs() {
 	r.log.Println("start LoopTakeQueueJobs")
 	for {
 		coolDown := r.cfg.Delay // have to call time.Sleep(coolDown) in each loop
