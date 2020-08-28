@@ -147,7 +147,9 @@ func (r Retrier) StopJob(jobId JobId) error {
 	return nil
 }
 
-// LoopTakeQueueJobs is meaningless on MemoryStorage because queue jobs do not exist
+// LoopTakeQueueJobs checks all running jobs in storage, if a job lastAttempted
+// too long time ago then run the job.
+// This func is meaningless on MemoryStorage because queue jobs do not exist.
 func (r *Retrier) LoopTakeQueueJobs() {
 	go func() { // for human
 		sigChan := make(chan os.Signal, 1)
