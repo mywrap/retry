@@ -9,12 +9,13 @@ Inspired by [avast/retry-go](https://github.com/avast/retry-go).
 ## Usage
 
 ````go
-func main() {
-	s := template.DemoFunc0(1, 2)
-	fmt.Println("sum:", s) // sum: 3
-}
+// TODO
 ````
 Detail in [example.go](./example/example.go).
+
+## Setup etcd cluster
+
+Example in sub dir `etcd` of [https://github.com/daominah/hello_docker].
 
 ## go mod etcd issue
 

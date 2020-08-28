@@ -193,9 +193,6 @@ func (r *Retrier) LoopTakeQueueJobs() {
 	}
 }
 
-// TODO: stops all running jobs
-func (r Retrier) Stop() {}
-
 type Storage interface {
 	// CreateJob creates a job with status running in the storage,
 	// returned error can be ErrDuplicateJob or underlying storage error.

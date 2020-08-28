@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mywrap/metric"
 	"go.etcd.io/etcd/v3/clientv3"
 	"go.etcd.io/etcd/v3/clientv3/concurrency"
 	"go.etcd.io/etcd/v3/mvcc/mvccpb"
@@ -15,45 +16,88 @@ import (
 
 type EtcdStorage struct {
 	cli    *clientv3.Client
-	mutex  *concurrency.Mutex // global mutex for all jobs
-	keyPfx string             // keyPfx: /retrierName
+	keyPfx string // keyPfx: /retrierName
+
+	// reuse lock session for reducing grant lease ops
+	session          *concurrency.Session
+	sessionCreatedAt time.Time
+	sessionMu        *sync.Mutex // for session, sessionCreatedAt
+
+	metric metric.Metric
 }
 
 // etcd client
 const (
-	timeout0            = 25 * time.Second
+	timeout0            = 5 * time.Second
+	reuseSession        = 3 * time.Second
 	pfxLock             = "/lock"
 	pfxJob              = "/job/"               // save jsoned job
 	pfxIdxStatusNextTry = "/idx/statusNextTry/" // save jobId
 )
 
 // :param keyPfx: different retriers must have different keyPfxs
-func NewEtcdStorage(cli *clientv3.Client, keyPfx string) (*EtcdStorage, error) {
-	s := &EtcdStorage{cli: cli, keyPfx: keyPfx}
-	// TODO: correct etcd lock usage
-	session, err := concurrency.NewSession(
-		cli, concurrency.WithTTL(int(timeout0.Seconds())))
+func NewEtcdStorage(cliCfg clientv3.Config, keyPfx string) (*EtcdStorage, error) {
+	cli, err := clientv3.New(cliCfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("clientv3 New %#v: %v", cliCfg, err)
 	}
-	s.mutex = concurrency.NewMutex(session, s.keyPfx+pfxLock)
-
-	if err := s.lock(); err != nil {
-		return nil, fmt.Errorf("error try 1st lock: %v", err)
+	s := &EtcdStorage{cli: cli, keyPfx: keyPfx,
+		sessionMu: &sync.Mutex{}, metric: metric.NewMemoryMetric()}
+	mutex, err := s.lock()
+	if err != nil {
+		return nil, fmt.Errorf("try 1st lock: %v", err)
 	}
-	if err := s.unlock(); err != nil {
-		return nil, fmt.Errorf("error try 1st unlock: %v", err)
+	if err := s.unlock(mutex); err != nil {
+		return nil, fmt.Errorf("try 1st unlock: %v", err)
 	}
-
 	return s, nil
 }
 
-func (s EtcdStorage) CreateJob(jobId JobId, jobFuncInputs []interface{}) (
-	Job, error) {
-	if err := s.lock(); err != nil {
-		return Job{}, fmt.Errorf("cannot lock: %v", err)
+func (s *EtcdStorage) lock() (mutex *concurrency.Mutex, retErr error) {
+	if true { // debug performance
+		s.metric.Count("lock")
+		defer func(bt time.Time) { s.metric.Duration("lock", time.Since(bt)) }(time.Now())
 	}
-	defer s.unlock()
+	s.sessionMu.Lock()
+	defer s.sessionMu.Unlock()
+	if s.session == nil || s.sessionCreatedAt.Before(time.Now().Add(-reuseSession)) {
+		//fmt.Println("debug create new session")
+		session, err := concurrency.NewSession(
+			s.cli, concurrency.WithTTL(int(timeout0.Seconds())))
+		if err != nil {
+			return nil, fmt.Errorf("cli NewSession WithTTL: %v", err)
+		}
+		s.session, s.sessionCreatedAt = session, time.Now()
+	}
+	mutex = concurrency.NewMutex(s.session, s.keyPfx+pfxLock)
+	defer func() { // sometime clientv3 Lock tryAcquire panic
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("recover %v", r)
+		}
+	}()
+	return mutex, mutex.Lock(context.TODO())
+}
+
+func (s *EtcdStorage) unlock(mutex *concurrency.Mutex) error {
+	if true { // debug performance
+		s.metric.Count("unlock")
+		defer func(bt time.Time) { s.metric.Duration("unlock", time.Since(bt)) }(time.Now())
+	}
+	return mutex.Unlock(context.TODO())
+}
+
+func (s *EtcdStorage) CreateJob(jobId JobId, jobFuncInputs []interface{}) (
+	Job, error) {
+	if true { // debug performance
+		s.metric.Count("CreateJob")
+		defer func(bt time.Time) { s.metric.Duration("CreateJob", time.Since(bt)) }(time.Now())
+	}
+
+	if mutex, err := s.lock(); err != nil {
+		return Job{}, fmt.Errorf("cannot lock: %v", err)
+	} else {
+		defer s.unlock(mutex)
+	}
 
 	job, err := s.getJob(jobId)
 	if err != errNoKeys {
@@ -96,7 +140,14 @@ func (s EtcdStorage) getJob(jobId JobId) (Job, error) {
 	return job, nil
 }
 
-func (s EtcdStorage) UpdateJob(job Job) error {
+// UpdateJob does not lock. The locks in CreateJob and TakeJobs ensured only
+// one retrier runs a job at a moment
+func (s *EtcdStorage) UpdateJob(job Job) error {
+	if true { // debug performance
+		s.metric.Count("UpdateJob")
+		defer func(bt time.Time) { s.metric.Duration("UpdateJob", time.Since(bt)) }(time.Now())
+	}
+
 	oldJob, err := s.getJob(job.Id)
 	if err != nil && err != errNoKeys {
 		return fmt.Errorf("getJob %v: %v", job.Id, err)
@@ -120,11 +171,12 @@ func (s EtcdStorage) UpdateJob(job Job) error {
 }
 
 // hanging jobs have keyIdxStatusNextTry < time_Now
-func (s EtcdStorage) RequeueHangingJobs() (int, error) {
-	if err := s.lock(); err != nil {
+func (s *EtcdStorage) RequeueHangingJobs() (int, error) {
+	if mutex, err := s.lock(); err != nil {
 		return 0, fmt.Errorf("cannot lock: %v", err)
+	} else {
+		defer s.unlock(mutex)
 	}
-	defer s.unlock()
 
 	beginKey := s.keyPfx + pfxIdxStatusNextTry + string(Running)
 	endKey := beginKey + "/" + time.Now().Format(fmtRFC3339Mili)
@@ -163,11 +215,12 @@ func (s EtcdStorage) RequeueHangingJobs() (int, error) {
 	wg.Wait()
 	return updated.val, nil
 }
-func (s EtcdStorage) TakeJobs() ([]Job, error) {
-	if err := s.lock(); err != nil {
+func (s *EtcdStorage) TakeJobs() ([]Job, error) {
+	if mutex, err := s.lock(); err != nil {
 		return nil, fmt.Errorf("cannot lock: %v", err)
+	} else {
+		defer s.unlock(mutex)
 	}
-	defer s.unlock()
 
 	beginKey := s.keyPfx + pfxIdxStatusNextTry + string(Queue)
 	ctx, cxl := context.WithTimeout(context.Background(), timeout0)
@@ -250,19 +303,6 @@ func (s EtcdStorage) deleteAllKey() (int, error) {
 		return 0, err
 	}
 	return int(resp.Deleted), nil
-}
-
-func (s EtcdStorage) lock() (retErr error) {
-	defer func() { // sometime panic on clientv3 Lock tryAcquire
-		if r := recover(); r != nil {
-			retErr = fmt.Errorf("recover %v", r)
-		}
-	}()
-	return s.mutex.Lock(context.TODO())
-}
-
-func (s EtcdStorage) unlock() error {
-	return s.mutex.Unlock(context.TODO())
 }
 
 func (s EtcdStorage) keyJob(jobId JobId) string {

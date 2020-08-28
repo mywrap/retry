@@ -23,6 +23,8 @@ var etcdConfig0 = clientv3.Config{
 		"192.168.99.102:2379",
 	},
 	DialTimeout: 5 * time.Second,
+	//Username:    "root",
+	//Password:    "123qwe",
 }
 
 func getInt64(cli *clientv3.Client, key string) int64 {
@@ -92,20 +94,16 @@ func TestEtcdLockSum(t *testing.T) {
 }
 
 func TestEtcdStorageNewRetrier(t *testing.T) {
-	etcdCli, err := clientv3.New(etcdConfig0)
-	if err != nil {
-		t.Fatalf("error etcd clientv3 New: %v", err)
-	}
-	defer etcdCli.Close()
-	etcdSto, err := NewEtcdStorage(etcdCli, "/retrierTestNew"+gofast.GenUUID())
+	etcdSto, err := NewEtcdStorage(etcdConfig0, "/retrierTestNew"+gofast.GenUUID())
 	if err != nil {
 		t.Fatalf("error NewEtcdStorage: %v", err)
 	}
 	t.Logf("ret NewEtcdStorage: %v, %v", etcdSto, err)
 
 	cfg := &Config{MaxAttempts: 10,
-		Delay: 100 * time.Millisecond, MaxJitter: 5 * time.Millisecond,
+		Delay: 25 * time.Millisecond, MaxJitter: 5 * time.Millisecond,
 	}
+	const nJobs = 2000
 	r := NewRetrier(jobCheckPayment, cfg, etcdSto,
 		log.New(os.Stdout, "", log.Lshortfile|log.Lmicroseconds))
 
@@ -115,7 +113,6 @@ func TestEtcdStorageNewRetrier(t *testing.T) {
 		t.Error(err)
 	}
 
-	const nJobs = 1000
 	wg := &sync.WaitGroup{}
 	for i := 0; i < nJobs; i++ {
 		txId := gofast.UUIDGenNoHyphen()
@@ -157,6 +154,12 @@ func TestEtcdStorageNewRetrier(t *testing.T) {
 		t.Errorf("error small nManuallyStoppeds: %v, expected: %v",
 			r.nStopOKJobs, nJobs/5)
 	}
+
+	// view metric
+	for _, row := range etcdSto.metric.GetCurrentMetric(){
+		t.Logf("metric row %#v", row)
+	}
+
 	// printf '\ec'; etcdctl get --prefix /retrierTest/job
 }
 
@@ -164,13 +167,7 @@ func TestEtcdStorageNewRetrier(t *testing.T) {
 // running jobs before it terminated. Run this func again to check whether if
 // nRequeueJobs == last nRunningJobs.
 func TestEtcdStorageResumeRetrier(t *testing.T) {
-	etcdCli, err := clientv3.New(etcdConfig0)
-	if err != nil {
-		t.Fatalf("error etcd clientv3 New: %v", err)
-	}
-	defer etcdCli.Close()
-
-	etcdSto, err := NewEtcdStorage(etcdCli, "/retrierTestResume")
+	etcdSto, err := NewEtcdStorage(etcdConfig0, "/retrierTestResume")
 	if err != nil {
 		t.Fatalf("error NewEtcdStorage: %v", err)
 	}
@@ -179,13 +176,13 @@ func TestEtcdStorageResumeRetrier(t *testing.T) {
 	cfg := &Config{MaxAttempts: 10,
 		Delay: 100 * time.Millisecond, MaxJitter: 5 * time.Millisecond,
 	}
+	const nJobs = 100
 	r := NewRetrier(jobCheckPayment, cfg, etcdSto,
 		log.New(os.Stdout, "", log.Lshortfile|log.Lmicroseconds))
 
 	go r.LoopTakeQueueJobs()
 	t.Logf("in queue keys: %v", etcdSto.keyPfx+pfxIdxStatusNextTry+Queue)
 
-	const nJobs = 100
 	wg := &sync.WaitGroup{}
 	for i := 0; i < nJobs; i++ {
 		txId := gofast.UUIDGenNoHyphen()
