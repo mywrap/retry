@@ -140,7 +140,7 @@ func TestEtcdStorageNewRetrier(t *testing.T) {
 			defer wg.Add(-1)
 			if rand.Intn(100) < 50 {
 				time.Sleep(r.cfg.DelayType(5+rand.Intn(5), r.cfg))
-				err := r.Stop(JobId(txId))
+				err := r.StopJob(JobId(txId))
 				//r.log.Printf("manually stop ret: %v, %v\n", err, txId)
 				if err != nil && err != ErrJobNotRunning {
 					t.Errorf("error retrier stop: %v", err)
@@ -160,8 +160,10 @@ func TestEtcdStorageNewRetrier(t *testing.T) {
 	// printf '\ec'; etcdctl get --prefix /retrierTest/job
 }
 
-// run this func, suddenly terminate, run again to check LoopTakeQueueJobs
-func _TestEtcdStorageResumeRetrier(t *testing.T) {
+// run this func, send SIGTERM to it, this func will print a number of
+// running jobs before it terminated. Run this func again to check whether if
+// nRequeueJobs == last nRunningJobs.
+func TestEtcdStorageResumeRetrier(t *testing.T) {
 	etcdCli, err := clientv3.New(etcdConfig0)
 	if err != nil {
 		t.Fatalf("error etcd clientv3 New: %v", err)

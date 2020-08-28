@@ -30,7 +30,7 @@ const (
 // :param keyPfx: different retriers must have different keyPfxs
 func NewEtcdStorage(cli *clientv3.Client, keyPfx string) (*EtcdStorage, error) {
 	s := &EtcdStorage{cli: cli, keyPfx: keyPfx}
-	//all locks created by this session have a TTL of timeout0
+	// TODO: correct etcd lock usage
 	session, err := concurrency.NewSession(
 		cli, concurrency.WithTTL(int(timeout0.Seconds())))
 	if err != nil {

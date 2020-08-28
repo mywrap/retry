@@ -8,7 +8,9 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -19,11 +21,11 @@ type Retrier struct {
 	jobFunc     func(inputs ...interface{}) error
 	cfg         *Config
 	Storage     Storage
-	Hostname    string
+	hostname    string // for human identifying machine
 	stopJobCxls map[JobId]context.CancelFunc
 	mutex       *sync.Mutex // for map stopJobCxls, nDoneJobs, nManuallyStops
 	nDoOKJobs   int         // for testing, number of Do returned nil error
-	nStopOKJobs int         // for testing, number of Stop returned nil error
+	nStopOKJobs int         // for testing, number of StopJob returned nil error
 	nDoErrJobs  int         // for testing, number of Do returned storage error
 	log         Logger
 }
@@ -48,9 +50,9 @@ func NewRetrier(jobFunc func(inputs ...interface{}) error,
 	if r.log == nil {
 		r.log = &EmptyLogger{}
 	}
-	r.Hostname, _ = os.Hostname()
-	if r.Hostname == "" {
-		r.Hostname = "hostname0"
+	r.hostname, _ = os.Hostname()
+	if r.hostname == "" {
+		r.hostname = "hostname0"
 	}
 	return r
 }
@@ -66,10 +68,10 @@ func (r *Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
 		r.mutex.Unlock()
 		return Job{}, fmt.Errorf("storage CreateJob: %w", err)
 	}
-	return r.run(j)
+	return r.runJob(j)
 }
 
-func (r *Retrier) run(j Job) (Job, error) {
+func (r *Retrier) runJob(j Job) (Job, error) {
 	stopCtx, cxl := context.WithCancel(context.Background())
 	r.mutex.Lock()
 	r.stopJobCxls[j.Id] = cxl
@@ -84,7 +86,7 @@ func (r *Retrier) run(j Job) (Job, error) {
 		err := r.jobFunc(j.JobFuncInputs...)
 		j.NTries++
 		j.LastTried = time.Now()
-		j.LastHost = r.Hostname
+		j.LastHost = r.hostname
 		j.NextDelay = r.cfg.DelayType(j.NTries, r.cfg)
 		if r.cfg.MaxDelay > 0 && j.NextDelay > r.cfg.MaxDelay {
 			j.NextDelay = r.cfg.MaxDelay
@@ -133,7 +135,8 @@ func (r *Retrier) run(j Job) (Job, error) {
 	}
 }
 
-func (r Retrier) Stop(jobId JobId) error {
+// StopJob manually stops a running job (before MaxAttempts)
+func (r Retrier) StopJob(jobId JobId) error {
 	r.mutex.Lock()
 	stopJobCxl, found := r.stopJobCxls[jobId]
 	r.mutex.Unlock()
@@ -146,6 +149,16 @@ func (r Retrier) Stop(jobId JobId) error {
 
 // LoopTakeQueueJobs is meaningless on MemoryStorage because queue jobs do not exist
 func (r *Retrier) LoopTakeQueueJobs() {
+	go func() { // for human
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+		<-sigChan
+		r.mutex.Lock()
+		nRunnings := len(r.stopJobCxls)
+		r.mutex.Unlock()
+		r.log.Printf("fatal os sigterm, nRunningJobs: %v\n", nRunnings)
+		os.Exit(0)
+	}()
 	r.log.Println("start LoopTakeQueueJobs")
 	for {
 		coolDown := r.cfg.Delay // have to call time.Sleep(coolDown) in each loop
@@ -170,7 +183,7 @@ func (r *Retrier) LoopTakeQueueJobs() {
 		}
 		for _, redoJob := range redoJobs {
 			go func(j Job) {
-				_, err := r.run(j)
+				_, err := r.runJob(j)
 				if err != nil {
 					r.log.Printf("error redo job %v: %v\n", j.Id, err)
 				}
@@ -179,6 +192,9 @@ func (r *Retrier) LoopTakeQueueJobs() {
 		time.Sleep(coolDown)
 	}
 }
+
+// TODO: stops all running jobs
+func (r Retrier) Stop() {}
 
 type Storage interface {
 	// CreateJob creates a job with status running in the storage,
