@@ -35,7 +35,7 @@ const (
 	pfxIdxStatusNextTry = "/idx/statusNextTry/" // save jobId
 )
 
-// :param keyPfx: different retriers must have different keyPfxs
+// :param keyPfx: different retriers must have different keyPfxs, ex: "/retrierTest3"
 func NewEtcdStorage(cliCfg clientv3.Config, keyPfx string) (*EtcdStorage, error) {
 	cli, err := clientv3.New(cliCfg)
 	if err != nil {
