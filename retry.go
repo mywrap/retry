@@ -27,16 +27,15 @@ type Retrier struct {
 	nDoOKJobs   int         // for testing, number of Do returned nil error
 	nStopOKJobs int         // for testing, number of StopJob returned nil error
 	nDoErrJobs  int         // for testing, number of Do returned storage error
-	log         Logger
 }
 
 // NewRetrier init a retrier, default save retrying state to memory.
 // :param jobFunc: inputs must be JSONable if using persist Storage
 // :param retrierName: optional, used as a namespace in persist Storage
 func NewRetrier(jobFunc func(inputs ...interface{}) error,
-	cfg *Config, storage Storage, logger Logger) *Retrier {
+	cfg *Config, storage Storage) *Retrier {
 	r := &Retrier{
-		jobFunc: jobFunc, cfg: cfg, Storage: storage, log: logger,
+		jobFunc: jobFunc, cfg: cfg, Storage: storage,
 		stopJobCxls: make(map[JobId]context.CancelFunc), mutex: &sync.Mutex{}}
 	if r.cfg == nil {
 		r.cfg = NewDefaultConfig()
@@ -46,9 +45,6 @@ func NewRetrier(jobFunc func(inputs ...interface{}) error,
 	}
 	if r.Storage == nil {
 		r.Storage = NewMemoryStorage()
-	}
-	if r.log == nil {
-		r.log = &EmptyLogger{}
 	}
 	r.hostname, _ = os.Hostname()
 	if r.hostname == "" {
@@ -60,7 +56,7 @@ func NewRetrier(jobFunc func(inputs ...interface{}) error,
 // Do runs a new job. If returned error is not nil and not ErrDuplicateJob, user
 // should Do again to ensure the job created.
 func (r *Retrier) Do(jobId JobId, jobFuncInputs ...interface{}) (Job, error) {
-	//r.log.Printf("doing JobId %v\n", jobId)
+	//Log.Printf("doing JobId %v\n", jobId)
 	j, err := r.Storage.CreateJob(jobId, jobFuncInputs)
 	if err != nil {
 		r.mutex.Lock()
@@ -76,7 +72,7 @@ func (r *Retrier) runJob(j Job) (Job, error) {
 	r.mutex.Lock()
 	r.stopJobCxls[j.Id] = cxl
 	r.mutex.Unlock()
-	//r.log.Printf("debug set stopJobCxls: %v\n", j.Id)
+	//Log.Printf("debug set stopJobCxls: %v\n", j.Id)
 	defer func() {
 		r.mutex.Lock()
 		delete(r.stopJobCxls, j.Id)
@@ -158,10 +154,10 @@ func (r *Retrier) LoopTakeQueueJobs() {
 		r.mutex.Lock()
 		nRunnings := len(r.stopJobCxls)
 		r.mutex.Unlock()
-		r.log.Printf("fatal os sigterm, nRunningJobs: %v\n", nRunnings)
+		Log.Printf("fatal os sigterm, nRunningJobs: %v\n", nRunnings)
 		os.Exit(0)
 	}()
-	r.log.Println("start LoopTakeQueueJobs")
+	Log.Println("start LoopTakeQueueJobs")
 	for {
 		coolDown := r.cfg.Delay // have to call time.Sleep(coolDown) in each loop
 		if coolDown < 1*time.Minute {
@@ -170,16 +166,16 @@ func (r *Retrier) LoopTakeQueueJobs() {
 
 		nRequeueJobs, err := r.Storage.RequeueHangingJobs()
 		if err != nil {
-			r.log.Printf("error RequeueHangingJobs: %v\n", err)
+			Log.Printf("error RequeueHangingJobs: %v\n", err)
 			time.Sleep(coolDown)
 			continue
 		}
 		if nRequeueJobs > 0 {
-			r.log.Printf("nRequeueJobs: %v\n", nRequeueJobs)
+			Log.Printf("nRequeueJobs: %v\n", nRequeueJobs)
 		}
 		redoJobs, err := r.Storage.TakeJobs()
 		if err != nil {
-			r.log.Printf("error TakeJobs: %v\n", err)
+			Log.Printf("error TakeJobs: %v\n", err)
 			time.Sleep(coolDown)
 			continue
 		}
@@ -187,7 +183,7 @@ func (r *Retrier) LoopTakeQueueJobs() {
 			go func(j Job) {
 				_, err := r.runJob(j)
 				if err != nil {
-					r.log.Printf("error redo job %v: %v\n", j.Id, err)
+					Log.Printf("error redo job %v: %v\n", j.Id, err)
 				}
 			}(redoJob)
 		}
@@ -325,3 +321,6 @@ func (l EmptyLogger) Println(v ...interface{})               {}
 func (l EmptyLogger) Printf(format string, v ...interface{}) {}
 func (l EmptyLogger) Fatal(v ...interface{})                 {}
 func (l EmptyLogger) Fatalf(format string, v ...interface{}) {}
+
+// Log is this package global logger, mainly used for debugging
+var Log Logger = EmptyLogger{}

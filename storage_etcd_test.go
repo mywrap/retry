@@ -40,15 +40,21 @@ func getInt64(cli *clientv3.Client, key string) int64 {
 }
 
 func TestEtcdLockSum(t *testing.T) {
+	Log = log.New(os.Stdout, "", log.Lshortfile|log.Lmicroseconds)
+	Log.Printf("debug cp0")
 	const nWorkers = 50
 	const sharedSumKey = "/TestEtcdLockSum/sharedSum"
 	const lockKey = "/TestEtcdLockSum/lock"
 	const expectedSum = int64(500)
+	Log.Printf("debug cp1")
 	cli0, err := clientv3.New(etcdConfig0)
+	Log.Printf("debug cp2")
 	if err != nil {
 		t.Fatalf("error etcd clientv3 New: %v", err)
 	}
-	_, err = cli0.Put(context.Background(), sharedSumKey, "0")
+	ctx, cxl := context.WithTimeout(context.Background(), 1*time.Second)
+	_, err = cli0.Put(ctx, sharedSumKey, "0")
+	cxl()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,11 +110,10 @@ func TestEtcdStorageNewRetrier(t *testing.T) {
 		Delay: 25 * time.Millisecond, MaxJitter: 5 * time.Millisecond,
 	}
 	const nJobs = 2000
-	r := NewRetrier(jobCheckPayment, cfg, etcdSto,
-		log.New(os.Stdout, "", log.Lshortfile|log.Lmicroseconds))
 
+	r := NewRetrier(jobCheckPayment, cfg, etcdSto)
 	n, err := etcdSto.deleteAllKey()
-	r.log.Printf("etcdSto deleteAllKey: %v, %v\n", n, err)
+	Log.Printf("etcdSto deleteAllKey: %v, %v\n", n, err)
 	if err != nil {
 		t.Error(err)
 	}
@@ -138,7 +143,7 @@ func TestEtcdStorageNewRetrier(t *testing.T) {
 			if rand.Intn(100) < 50 {
 				time.Sleep(r.cfg.DelayType(5+rand.Intn(5), r.cfg))
 				err := r.StopJob(JobId(txId))
-				//r.log.Printf("manually stop ret: %v, %v\n", err, txId)
+				//Log.Printf("manually stop ret: %v, %v\n", err, txId)
 				if err != nil && err != ErrJobNotRunning {
 					t.Errorf("error retrier stop: %v", err)
 				}
@@ -149,14 +154,14 @@ func TestEtcdStorageNewRetrier(t *testing.T) {
 	if r.nDoOKJobs+r.nStopOKJobs != nJobs {
 		t.Errorf("error nDonedJobs: %v, nJobs: %v", r.nDoOKJobs+r.nStopOKJobs, nJobs)
 	}
-	r.log.Printf("nManuallyStoppeds: %v\n", r.nStopOKJobs)
+	Log.Printf("nManuallyStoppeds: %v\n", r.nStopOKJobs)
 	if r.nStopOKJobs < 1 {
 		t.Errorf("error small nManuallyStoppeds: %v, expected: %v",
 			r.nStopOKJobs, nJobs/5)
 	}
 
 	// view metric
-	for _, row := range etcdSto.metric.GetCurrentMetric(){
+	for _, row := range etcdSto.metric.GetCurrentMetric() {
 		t.Logf("metric row %#v", row)
 	}
 
@@ -177,8 +182,7 @@ func TestEtcdStorageResumeRetrier(t *testing.T) {
 		Delay: 100 * time.Millisecond, MaxJitter: 5 * time.Millisecond,
 	}
 	const nJobs = 100
-	r := NewRetrier(jobCheckPayment, cfg, etcdSto,
-		log.New(os.Stdout, "", log.Lshortfile|log.Lmicroseconds))
+	r := NewRetrier(jobCheckPayment, cfg, etcdSto)
 
 	go r.LoopTakeQueueJobs()
 	t.Logf("in queue keys: %v", etcdSto.keyPfx+pfxIdxStatusNextTry+Queue)

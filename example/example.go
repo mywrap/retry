@@ -34,7 +34,7 @@ func main() {
 	}
 	cfg := &retry.Config{MaxAttempts: 15, DelayType: retry.ExpBackOffDelay,
 		Delay: 100 * time.Millisecond, MaxJitter: 0 * time.Millisecond}
-	retrier := retry.NewRetrier(callUnreliableResource, cfg, etcdSto, nil)
+	retrier := retry.NewRetrier(callUnreliableResource, cfg, etcdSto)
 
 	// checks all running jobs in storage, if a job lastAttempted too long time '
 	// ago (maybe the runner crashed) then run the job

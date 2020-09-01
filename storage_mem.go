@@ -2,12 +2,11 @@ package retry
 
 import (
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
 	"time"
-
-	"errors"
 
 	"github.com/petar/GoLLRB/llrb"
 )
