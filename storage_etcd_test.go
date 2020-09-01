@@ -41,14 +41,11 @@ func getInt64(cli *clientv3.Client, key string) int64 {
 
 func TestEtcdLockSum(t *testing.T) {
 	Log = log.New(os.Stdout, "", log.Lshortfile|log.Lmicroseconds)
-	Log.Printf("debug cp0")
 	const nWorkers = 50
 	const sharedSumKey = "/TestEtcdLockSum/sharedSum"
 	const lockKey = "/TestEtcdLockSum/lock"
 	const expectedSum = int64(500)
-	Log.Printf("debug cp1")
 	cli0, err := clientv3.New(etcdConfig0)
-	Log.Printf("debug cp2")
 	if err != nil {
 		t.Fatalf("error etcd clientv3 New: %v", err)
 	}

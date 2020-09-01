@@ -41,6 +41,8 @@ func NewEtcdStorage(cliCfg clientv3.Config, keyPfx string) (*EtcdStorage, error)
 	if err != nil {
 		return nil, fmt.Errorf("clientv3 New %#v: %v", cliCfg, err)
 	}
+	// clientv3_New can return nil even if the cluseter is not running so we
+	// try to lock and unlock as PING
 	s := &EtcdStorage{cli: cli, keyPfx: keyPfx,
 		sessionMu: &sync.Mutex{}, metric: metric.NewMemoryMetric()}
 	mutex, err := s.lock()
