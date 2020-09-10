@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/mywrap/gofast"
 )
 
 // Retrier is used for retrying jobs, retry state will be saved to a persistent
@@ -87,7 +89,7 @@ func (r *Retrier) runJob(j Job) (Job, error) {
 		if r.cfg.MaxDelay > 0 && j.NextDelay > r.cfg.MaxDelay {
 			j.NextDelay = r.cfg.MaxDelay
 		}
-		if err == nil {
+		if gofast.CheckNilInterface(err) {
 			j.Errors = append(j.Errors, "")
 			j.Status = Stopped // successfully do the job
 		} else {

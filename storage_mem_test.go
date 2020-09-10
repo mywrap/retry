@@ -37,6 +37,24 @@ func jobCheckPayment(inputs ...interface{}) error {
 	return err
 }
 
+type myErrType struct{ msg string }
+
+func (err myErrType) Error() string { return err.msg }
+
+func jobCheckPayment2(inputs ...interface{}) error {
+	var txId, date string
+	if len(inputs) >= 2 {
+		txId, _ = inputs[0].(string)
+		date, _ = inputs[1].(string)
+	}
+	_, err := callUnreliable(txId, date)
+	if err != nil {
+		return &myErrType{err.Error()}
+	}
+	var retErr *myErrType = nil
+	return retErr
+}
+
 func TestRetrierMemoryStorage1(t *testing.T) {
 	rand.Seed(time.Now().UnixNano())
 	cfg := &Config{MaxAttempts: 10, Delay: 10 * time.Millisecond}
@@ -128,5 +146,15 @@ func TestRetrierMemoryStorage2(t *testing.T) {
 	n, err := memSto.ExportCSV("jobsStopped2.csv")
 	if err != nil || n != nJobs {
 		t.Error(err, n)
+	}
+}
+
+func TestRetrier_Do_NilCustomErr(t *testing.T) {
+	cfg := &Config{MaxAttempts: 10,
+		Delay: 50 * time.Millisecond, MaxJitter: 10 * time.Millisecond}
+	r := NewRetrier(jobCheckPayment2, cfg, nil)
+	_, err := r.Do("txId0", "date0")
+	if err != nil {
+		t.Error(err)
 	}
 }
