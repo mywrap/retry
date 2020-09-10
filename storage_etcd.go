@@ -103,10 +103,10 @@ func (s *EtcdStorage) CreateJob(jobId JobId, jobFuncInputs []interface{}) (
 
 	job, err := s.getJob(jobId)
 	if err != errNoKeys {
-		if err == nil {
-			return Job{}, ErrDuplicateJob
+		if err != nil {
+			return Job{}, err
 		}
-		return Job{}, err
+		return Job{}, ErrDuplicateJob
 	}
 	job = Job{JobFuncInputs: jobFuncInputs,
 		Id: jobId, Status: Running, LastTried: time.Now()}
@@ -154,7 +154,9 @@ func (s *EtcdStorage) UpdateJob(job Job) error {
 	if err != nil && err != errNoKeys {
 		return fmt.Errorf("getJob %v: %v", job.Id, err)
 	}
-	if err == nil {
+	if err == errNoKeys {
+		// should be unreachable
+	} else {
 		ctx, cxl := context.WithTimeout(context.Background(), timeout0)
 		s.cli.Delete(ctx, s.keyIdxStatusNextTry(oldJob))
 		cxl()
