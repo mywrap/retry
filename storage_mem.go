@@ -14,8 +14,9 @@ import (
 type MemoryStorage struct {
 	jobs map[JobId]*JobInTree
 	// Item is *JobInTree, this index must be updated on updating jobs,
-	idxStatusNextTry *llrb.LLRB
-	mutex            *sync.Mutex
+	idxStatusNextTry      *llrb.LLRB
+	mutex                 *sync.Mutex
+	jobsFailedAllAttempts []Job
 }
 
 func NewMemoryStorage() *MemoryStorage {
@@ -51,6 +52,9 @@ func (s *MemoryStorage) UpdateJob(job Job) error {
 	updatedJob := NewJobInTree(&job)
 	s.jobs[job.Id] = updatedJob
 	s.idxStatusNextTry.InsertNoReplace(updatedJob)
+	if job.Status == Stopped {
+		// TODO: check and add the job to jobsFailedAllAttempts if needed
+	}
 	return nil
 }
 func (s *MemoryStorage) RequeueHangingJobs() (int, error) {
@@ -108,6 +112,14 @@ func (s *MemoryStorage) ExportCSV(outFile string) (int, error) {
 	}
 	w.Flush()
 	return len(rows), w.Error()
+}
+
+func (s *MemoryStorage) ReadJobsRunning() ([]Job, error) {
+	return nil, nil // TODO
+}
+
+func (s *MemoryStorage) ReadJobsFailedAllAttempts() ([]Job, error) {
+	return nil, nil // TODO
 }
 
 // JobInTree must be inited by NewJobInTree

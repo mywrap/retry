@@ -206,6 +206,11 @@ type Storage interface {
 	TakeJobs() ([]Job, error)
 	// clean up storage space
 	DeleteStoppedJobs() (nDeletedJobs int, err error)
+
+	// optional monitor functions
+
+	ReadJobsRunning() ([]Job, error)
+	ReadJobsFailedAllAttempts() ([]Job, error)
 }
 
 // Config for Retrier

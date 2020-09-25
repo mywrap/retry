@@ -328,6 +328,14 @@ func (s EtcdStorage) keyIdxStatusNextTry(j Job) string {
 		j.Id)
 }
 
+func (s EtcdStorage) ReadJobsRunning() ([]Job, error) {
+	return nil, nil // TODO
+}
+
+func (s EtcdStorage) ReadJobsFailedAllAttempts() ([]Job, error) {
+	return nil, nil // TODO
+}
+
 const fmtRFC3339Mili = "2006-01-02T15:04:05.999Z07:00"
 
 var errNoKeys = errors.New("etcd get no keys")
