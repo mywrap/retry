@@ -23,7 +23,7 @@ type EtcdStorage struct {
 	sessionCreatedAt time.Time
 	sessionMu        *sync.Mutex // for session, sessionCreatedAt
 
-	metric metric.Metric
+	metric metric.Metric // can be nil
 }
 
 // etcd client
@@ -43,8 +43,7 @@ func NewEtcdStorage(cliCfg clientv3.Config, keyPfx string) (*EtcdStorage, error)
 	}
 	// clientv3_New can return nil even if the cluseter is not running so we
 	// try to lock and unlock as PING
-	s := &EtcdStorage{cli: cli, keyPfx: keyPfx,
-		sessionMu: &sync.Mutex{}, metric: metric.NewMemoryMetric()}
+	s := &EtcdStorage{cli: cli, keyPfx: keyPfx, sessionMu: &sync.Mutex{}}
 	mutex, err := s.lock()
 	if err != nil {
 		return nil, fmt.Errorf("try 1st lock: %v", err)
@@ -56,7 +55,7 @@ func NewEtcdStorage(cliCfg clientv3.Config, keyPfx string) (*EtcdStorage, error)
 }
 
 func (s *EtcdStorage) lock() (mutex *concurrency.Mutex, retErr error) {
-	if true { // debug performance
+	if s.metric != nil {
 		s.metric.Count("lock")
 		defer func(bt time.Time) { s.metric.Duration("lock", time.Since(bt)) }(time.Now())
 	}
@@ -81,7 +80,7 @@ func (s *EtcdStorage) lock() (mutex *concurrency.Mutex, retErr error) {
 }
 
 func (s *EtcdStorage) unlock(mutex *concurrency.Mutex) error {
-	if true { // debug performance
+	if s.metric != nil { // debug performance
 		s.metric.Count("unlock")
 		defer func(bt time.Time) { s.metric.Duration("unlock", time.Since(bt)) }(time.Now())
 	}
@@ -90,7 +89,7 @@ func (s *EtcdStorage) unlock(mutex *concurrency.Mutex) error {
 
 func (s *EtcdStorage) CreateJob(jobId JobId, jobFuncInputs []interface{}) (
 	Job, error) {
-	if true { // debug performance
+	if s.metric != nil { // debug performance
 		s.metric.Count("CreateJob")
 		defer func(bt time.Time) { s.metric.Duration("CreateJob", time.Since(bt)) }(time.Now())
 	}
@@ -145,7 +144,7 @@ func (s EtcdStorage) getJob(jobId JobId) (Job, error) {
 // UpdateJob does not lock. The locks in CreateJob and TakeJobs ensured only
 // one retrier runs a job at a moment
 func (s *EtcdStorage) UpdateJob(job Job) error {
-	if true { // debug performance
+	if s.metric != nil { // debug performance
 		s.metric.Count("UpdateJob")
 		defer func(bt time.Time) { s.metric.Duration("UpdateJob", time.Since(bt)) }(time.Now())
 	}

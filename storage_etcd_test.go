@@ -158,8 +158,10 @@ func TestEtcdStorageNewRetrier(t *testing.T) {
 	}
 
 	// view metric
-	for _, row := range etcdSto.metric.GetCurrentMetric() {
-		t.Logf("metric row %#v", row)
+	if etcdSto.metric != nil {
+		for _, row := range etcdSto.metric.GetCurrentMetric() {
+			t.Logf("metric row %#v", row)
+		}
 	}
 
 	// printf '\ec'; etcdctl get --prefix /retrierTest/job
