@@ -18,7 +18,7 @@ type EtcdStorage struct {
 	cli    *clientv3.Client
 	keyPfx string // keyPfx: /retrierName
 
-	// reuse lock session for reducing grant lease ops
+	// reuse lock session for reducing grant lease operations
 	session          *concurrency.Session
 	sessionCreatedAt time.Time
 	sessionMu        *sync.Mutex // for session, sessionCreatedAt
@@ -28,8 +28,11 @@ type EtcdStorage struct {
 
 // etcd client
 const (
-	timeout0            = 5 * time.Second
-	reuseSession        = 3 * time.Second
+	opCRUDTimeout = 3 * time.Second
+	// session was created in maxMutexLockDur can be reused to create new mutex
+	maxMutexLockDur = 3 * opCRUDTimeout
+	// sessionTTL > maxMutexLockDur
+	sessionTTL          = 15 * time.Second
 	pfxLock             = "/lock"
 	pfxJob              = "/job/"               // save jsoned job
 	pfxIdxStatusNextTry = "/idx/statusNextTry/" // save jobId
@@ -61,10 +64,10 @@ func (s *EtcdStorage) lock() (mutex *concurrency.Mutex, retErr error) {
 	}
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
-	if s.session == nil || s.sessionCreatedAt.Before(time.Now().Add(-reuseSession)) {
+	if s.session == nil || s.sessionCreatedAt.Before(time.Now().Add(-maxMutexLockDur)) {
 		//fmt.Println("debug create new session")
 		session, err := concurrency.NewSession(
-			s.cli, concurrency.WithTTL(int(timeout0.Seconds())))
+			s.cli, concurrency.WithTTL(int(sessionTTL.Seconds())))
 		if err != nil {
 			return nil, fmt.Errorf("cli NewSession WithTTL: %v", err)
 		}
@@ -76,7 +79,7 @@ func (s *EtcdStorage) lock() (mutex *concurrency.Mutex, retErr error) {
 			retErr = fmt.Errorf("recover %v", r)
 		}
 	}()
-	return mutex, mutex.Lock(context.TODO())
+	return mutex, mutex.Lock(context.Background())
 }
 
 func (s *EtcdStorage) unlock(mutex *concurrency.Mutex) error {
@@ -84,7 +87,7 @@ func (s *EtcdStorage) unlock(mutex *concurrency.Mutex) error {
 		s.metric.Count("unlock")
 		defer func(bt time.Time) { s.metric.Duration("unlock", time.Since(bt)) }(time.Now())
 	}
-	return mutex.Unlock(context.TODO())
+	return mutex.Unlock(context.Background())
 }
 
 func (s *EtcdStorage) CreateJob(jobId JobId, jobFuncInputs []interface{}) (
@@ -109,13 +112,13 @@ func (s *EtcdStorage) CreateJob(jobId JobId, jobFuncInputs []interface{}) (
 	}
 	job = Job{JobFuncInputs: jobFuncInputs,
 		Id: jobId, Status: Running, LastTried: time.Now()}
-	ctx1, cxl1 := context.WithTimeout(context.Background(), timeout0)
+	ctx1, cxl1 := context.WithTimeout(context.Background(), opCRUDTimeout)
 	_, err = s.cli.Put(ctx1, s.keyJob(jobId), job.JsonMarshal())
 	cxl1()
 	if err != nil {
 		return Job{}, fmt.Errorf("clientv3 put key %v: %v", s.keyJob(jobId), err)
 	}
-	ctx2, cxl2 := context.WithTimeout(context.Background(), timeout0)
+	ctx2, cxl2 := context.WithTimeout(context.Background(), opCRUDTimeout)
 	// TODO: handle Put idx err after successfully Put job
 	s.cli.Put(ctx2, s.keyIdxStatusNextTry(job), string(jobId))
 	cxl2()
@@ -124,7 +127,7 @@ func (s *EtcdStorage) CreateJob(jobId JobId, jobFuncInputs []interface{}) (
 
 // returned error can be errNoKeys or other exceptions
 func (s EtcdStorage) getJob(jobId JobId) (Job, error) {
-	ctx, cxl := context.WithTimeout(context.Background(), timeout0)
+	ctx, cxl := context.WithTimeout(context.Background(), opCRUDTimeout)
 	resp, err := s.cli.Get(ctx, s.keyJob(jobId))
 	cxl()
 	if err != nil {
@@ -156,18 +159,18 @@ func (s *EtcdStorage) UpdateJob(job Job) error {
 	if err == errNoKeys {
 		// should be unreachable
 	} else {
-		ctx, cxl := context.WithTimeout(context.Background(), timeout0)
+		ctx, cxl := context.WithTimeout(context.Background(), opCRUDTimeout)
 		s.cli.Delete(ctx, s.keyIdxStatusNextTry(oldJob))
 		cxl()
 	}
 
-	ctx1, cxl1 := context.WithTimeout(context.Background(), timeout0)
+	ctx1, cxl1 := context.WithTimeout(context.Background(), opCRUDTimeout)
 	_, err = s.cli.Put(ctx1, s.keyJob(job.Id), job.JsonMarshal())
 	cxl1()
 	if err != nil {
 		return fmt.Errorf("clientv3 put key %v: %v", s.keyJob(job.Id), err)
 	}
-	ctx2, cxl2 := context.WithTimeout(context.Background(), timeout0)
+	ctx2, cxl2 := context.WithTimeout(context.Background(), opCRUDTimeout)
 	_, err = s.cli.Put(ctx2, s.keyIdxStatusNextTry(job), string(job.Id))
 	cxl2()
 	return nil
@@ -183,7 +186,7 @@ func (s *EtcdStorage) RequeueHangingJobs() (int, error) {
 
 	beginKey := s.keyPfx + pfxIdxStatusNextTry + string(Running)
 	endKey := beginKey + "/" + time.Now().Format(fmtRFC3339Mili)
-	ctx, cxl := context.WithTimeout(context.Background(), timeout0)
+	ctx, cxl := context.WithTimeout(context.Background(), opCRUDTimeout)
 	resp, err := s.cli.Get(ctx, beginKey, clientv3.WithRange(endKey))
 	cxl()
 	if err != nil {
@@ -226,7 +229,7 @@ func (s *EtcdStorage) TakeJobs() ([]Job, error) {
 	}
 
 	beginKey := s.keyPfx + pfxIdxStatusNextTry + string(Queue)
-	ctx, cxl := context.WithTimeout(context.Background(), timeout0)
+	ctx, cxl := context.WithTimeout(context.Background(), opCRUDTimeout)
 	resp, err := s.cli.Get(ctx, beginKey, clientv3.WithPrefix())
 	cxl()
 	if err != nil {
@@ -257,14 +260,14 @@ func (s *EtcdStorage) TakeJobs() ([]Job, error) {
 		}(kv)
 	}
 	wg.Wait()
-	ctx2, cxl2 := context.WithTimeout(context.Background(), timeout0)
+	ctx2, cxl2 := context.WithTimeout(context.Background(), opCRUDTimeout)
 	s.cli.Delete(ctx2, beginKey, clientv3.WithPrefix())
 	cxl2()
 	return updated.val, nil
 }
 func (s EtcdStorage) DeleteStoppedJobs() (int, error) {
 	beginKey := s.keyPfx + pfxIdxStatusNextTry + string(Stopped)
-	ctx, cxl := context.WithTimeout(context.Background(), timeout0)
+	ctx, cxl := context.WithTimeout(context.Background(), opCRUDTimeout)
 	resp, err := s.cli.Get(ctx, beginKey, clientv3.WithPrefix())
 	cxl()
 	if err != nil {
@@ -280,7 +283,7 @@ func (s EtcdStorage) DeleteStoppedJobs() (int, error) {
 		go func(kv *mvccpb.KeyValue) {
 			defer wg.Add(-1)
 			jobId := JobId(kv.Value)
-			ctx, cxl := context.WithTimeout(context.Background(), timeout0)
+			ctx, cxl := context.WithTimeout(context.Background(), opCRUDTimeout)
 			_, err := s.cli.Delete(ctx, s.keyJob(jobId))
 			cxl()
 			if err == nil {
@@ -291,7 +294,7 @@ func (s EtcdStorage) DeleteStoppedJobs() (int, error) {
 		}(kv)
 	}
 	wg.Wait()
-	ctx2, cxl2 := context.WithTimeout(context.Background(), timeout0)
+	ctx2, cxl2 := context.WithTimeout(context.Background(), opCRUDTimeout)
 	s.cli.Delete(ctx2, beginKey, clientv3.WithPrefix())
 	cxl2()
 	return updated.val, nil
@@ -299,7 +302,7 @@ func (s EtcdStorage) DeleteStoppedJobs() (int, error) {
 
 // delete all key with the storage's prefix, for testing
 func (s EtcdStorage) deleteAllKey() (int, error) {
-	ctx, cxl := context.WithTimeout(context.Background(), timeout0)
+	ctx, cxl := context.WithTimeout(context.Background(), opCRUDTimeout)
 	resp, err := s.cli.Delete(ctx, s.keyPfx, clientv3.WithPrefix())
 	cxl()
 	if err != nil {
