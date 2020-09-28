@@ -1,7 +1,9 @@
 package retry
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math/rand"
 	"sync"
 	"testing"
@@ -37,26 +39,7 @@ func jobCheckPayment(inputs ...interface{}) error {
 	return err
 }
 
-type myErrType struct{ msg string }
-
-func (err myErrType) Error() string { return err.msg }
-
-func jobCheckPayment2(inputs ...interface{}) error {
-	var txId, date string
-	if len(inputs) >= 2 {
-		txId, _ = inputs[0].(string)
-		date, _ = inputs[1].(string)
-	}
-	_, err := callUnreliable(txId, date)
-	if err != nil {
-		return &myErrType{err.Error()}
-	}
-	var retErr *myErrType = nil
-	return retErr
-}
-
 func TestRetrierMemoryStorage1(t *testing.T) {
-	rand.Seed(time.Now().UnixNano())
 	cfg := &Config{MaxAttempts: 10, Delay: 10 * time.Millisecond}
 	r := NewRetrier(jobCheckPayment, cfg, nil)
 	memSto := r.Storage.(*MemoryStorage)
@@ -151,6 +134,24 @@ func TestRetrierMemoryStorage2(t *testing.T) {
 	}
 }
 
+type myErrType struct{ msg string }
+
+func (err myErrType) Error() string { return err.msg }
+
+func jobCheckPayment2(inputs ...interface{}) error {
+	var txId, date string
+	if len(inputs) >= 2 {
+		txId, _ = inputs[0].(string)
+		date, _ = inputs[1].(string)
+	}
+	_, err := callUnreliable(txId, date)
+	if err != nil {
+		return &myErrType{err.Error()}
+	}
+	var retErr *myErrType = nil
+	return retErr
+}
+
 func TestRetrier_Do_NilCustomErr(t *testing.T) {
 	cfg := &Config{MaxAttempts: 10,
 		Delay: 50 * time.Millisecond, MaxJitter: 10 * time.Millisecond}
@@ -161,4 +162,46 @@ func TestRetrier_Do_NilCustomErr(t *testing.T) {
 	}
 }
 
-// TODO: add tests ReadJobsRunning, ReadJobsFailedAllAttempts
+func TestMemoryStorage_Monitor(t *testing.T) {
+	cfg := &Config{MaxAttempts: 10,
+		Delay: 50 * time.Millisecond, MaxJitter: 10 * time.Millisecond}
+	r := NewRetrier(jobCheckPayment, cfg, nil)
+	wg := sync.WaitGroup{}
+	for i := 0; i < 100; i++ {
+		ii := fmt.Sprintf("%02d", i)
+		wg.Add(1)
+		go func() {
+			defer wg.Add(-1)
+			_, err := r.Do(JobId("txId"+ii), "date0"+ii)
+			if err != nil {
+				t.Error(ii, err)
+			}
+		}()
+	}
+	done := make(chan bool)
+	go func() {
+	Loop0:
+		for {
+			runningJobs, err := r.Storage.ReadJobsRunning()
+			t.Logf("nRunning: %v, err: %v", len(runningJobs), err)
+			select {
+			case <-time.After(500 * time.Millisecond):
+				continue
+			case <-done:
+				break Loop0
+			}
+		}
+	}()
+	wg.Wait()
+	runningJobs, err := r.Storage.ReadJobsRunning()
+	beauty, _ := json.MarshalIndent(runningJobs, "", "\t")
+	t.Logf("last running: %s, err: %v", beauty, err)
+	if len(runningJobs) > 0 {
+		t.Error(`error done still run ¯\_(ツ)_/¯`)
+	}
+	failAllAttemptsJobs, err := r.Storage.ReadJobsFailedAllAttempts()
+	t.Logf("nFailAllAttemptsJobs: %v", len(failAllAttemptsJobs))
+	if len(failAllAttemptsJobs) == 0 {
+		t.Error("error unexpected 0 nFailAllAttemptsJobs")
+	}
+}

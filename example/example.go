@@ -25,7 +25,6 @@ func main() {
 	log.Println("inited etcd storage")
 
 	callUnreliableResource := func(inputs ...interface{}) error {
-		rand.Seed(time.Now().UnixNano())
 		log.Printf("about to callUnreliableResource")
 		if rand.Intn(100) < 90 {
 			return errors.New("resourceUnavailable")

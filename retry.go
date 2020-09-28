@@ -337,3 +337,5 @@ func (l EmptyLogger) Fatalf(format string, v ...interface{}) {}
 
 // Log is this package global logger, mainly used for debugging
 var Log Logger = EmptyLogger{}
+
+func init() { rand.Seed(time.Now().UnixNano()) }

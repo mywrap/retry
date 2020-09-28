@@ -2,7 +2,9 @@ package retry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"math/rand"
 	"os"
@@ -169,10 +171,8 @@ func TestEtcdStorageNewRetrier(t *testing.T) {
 	// printf '\ec'; etcdctl get --prefix /retrierTest/job
 }
 
-// run this func, send SIGTERM to it, this func will print a number of
-// running jobs before it terminated. Run this func again to check whether if
-// nRequeueJobs == last nRunningJobs.
-func TestEtcdStorageResumeRetrier(t *testing.T) {
+func FuncTestEtcdStorageResumeRetrier(t *testing.T, isExitWhenRunning bool) {
+	t.Logf("begin FuncTestEtcdStorageResumeRetrier")
 	etcdSto, err := NewEtcdStorage(etcdConfig0, "/retrierTestResume")
 	if err != nil {
 		t.Fatalf("error NewEtcdStorage: %v", err)
@@ -200,6 +200,11 @@ func TestEtcdStorageResumeRetrier(t *testing.T) {
 			}
 		}(i)
 	}
+	time.Sleep(r.cfg.DelayType(6+rand.Intn(4), r.cfg))
+	if isExitWhenRunning {
+		t.Logf("end when running FuncTestEtcdStorageResumeRetrier")
+		os.Exit(0)
+	}
 	wg.Wait()
 	r.mutex.Lock()
 	time.Sleep(1 * time.Second)
@@ -208,6 +213,62 @@ func TestEtcdStorageResumeRetrier(t *testing.T) {
 		t.Errorf("nDoErrJobs: %v", r.nDoErrJobs)
 	}
 	r.mutex.Unlock()
+	t.Logf("end normally FuncTestEtcdStorageResumeRetrier")
 }
 
-// TODO: add tests ReadJobsRunning, ReadJobsFailedAllAttempts
+func TestEtcdStorageResumeRetrier(t *testing.T) {
+	FuncTestEtcdStorageResumeRetrier(t, true)
+}
+
+func TestEtcdStorageResumeRetrier2(t *testing.T) {
+	FuncTestEtcdStorageResumeRetrier(t, false)
+}
+
+func TestEtcdStorage_Monitor(t *testing.T) {
+	etcdSto, err := NewEtcdStorage(etcdConfig0, "/retrierTestMonitor")
+	if err != nil {
+		t.Fatalf("error NewEtcdStorage: %v", err)
+	}
+	etcdSto.DeleteStoppedJobs()
+	cfg := &Config{MaxAttempts: 10,
+		Delay: 50 * time.Millisecond, MaxJitter: 10 * time.Millisecond}
+	r := NewRetrier(jobCheckPayment, cfg, etcdSto)
+	wg := sync.WaitGroup{}
+	for i := 0; i < 100; i++ {
+		ii := fmt.Sprintf("%02d", i)
+		wg.Add(1)
+		go func() {
+			defer wg.Add(-1)
+			_, err := r.Do(JobId("txId"+ii), "date0"+ii)
+			if err != nil {
+				t.Error(ii, err)
+			}
+		}()
+	}
+	done := make(chan bool)
+	go func() {
+	Loop0:
+		for {
+			runningJobs, err := r.Storage.ReadJobsRunning()
+			t.Logf("nRunning: %v, err: %v", len(runningJobs), err)
+			select {
+			case <-time.After(500 * time.Millisecond):
+				continue
+			case <-done:
+				break Loop0
+			}
+		}
+	}()
+	wg.Wait()
+	runningJobs, err := r.Storage.ReadJobsRunning()
+	beauty, _ := json.MarshalIndent(runningJobs, "", "\t")
+	t.Logf("last running: %s, err: %v", beauty, err)
+	if len(runningJobs) > 0 {
+		t.Error(`error done still run ¯\_(ツ)_/¯`)
+	}
+	failAllAttemptsJobs, err := r.Storage.ReadJobsFailedAllAttempts()
+	t.Logf("nFailAllAttemptsJobs: %v", len(failAllAttemptsJobs))
+	if len(failAllAttemptsJobs) == 0 {
+		t.Error("error unexpected 0 nFailAllAttemptsJobs")
+	}
+}
