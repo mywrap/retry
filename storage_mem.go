@@ -36,7 +36,6 @@ func (s *MemoryStorage) CreateJob(jobId JobId, jobFuncInputs []interface{}) (
 	}
 	job := NewJobInTree(&Job{JobFuncInputs: jobFuncInputs,
 		Id: jobId, Status: Running, LastTried: time.Now()})
-	job.calcKeyStatusNextTry()
 	s.jobs[jobId] = job
 	s.idxStatusNextTry.InsertNoReplace(job)
 	return *job.Job, nil
@@ -53,7 +52,7 @@ func (s *MemoryStorage) UpdateJob(job Job) error {
 	s.jobs[job.Id] = updatedJob
 	s.idxStatusNextTry.InsertNoReplace(updatedJob)
 	if job.Status == Stopped {
-		// TODO: check and add the job to jobsFailedAllAttempts if needed
+		//if job.NTries == job.
 	}
 	return nil
 }
@@ -74,7 +73,7 @@ func (s *MemoryStorage) DeleteStoppedJobs() (int, error) {
 	}
 	s.idxStatusNextTry.AscendRange(
 		NewJobInTree(&Job{Status: Stopped}),
-		NewJobInTree(&Job{Status: Stopped, LastTried: time.Now().Add(999 * time.Hour)}),
+		NewJobInTree(&Job{Status: Stopped, LastTried: time.Now().Add(99999 * time.Hour)}),
 		iterFunc)
 	for _, job := range jobs {
 		s.idxStatusNextTry.Delete(job)
@@ -115,7 +114,19 @@ func (s *MemoryStorage) ExportCSV(outFile string) (int, error) {
 }
 
 func (s *MemoryStorage) ReadJobsRunning() ([]Job, error) {
-	return nil, nil // TODO
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	runningJobs := make([]Job, 0)
+	iterFunc := func(item llrb.Item) bool {
+		job, _ := item.(*JobInTree)
+		runningJobs = append(runningJobs, *job.Job)
+		return true
+	}
+	s.idxStatusNextTry.AscendRange(
+		NewJobInTree(&Job{Status: Running}),
+		NewJobInTree(&Job{Status: Running, LastTried: time.Now().Add(99999 * time.Hour)}),
+		iterFunc)
+	return runningJobs, nil
 }
 
 func (s *MemoryStorage) ReadJobsFailedAllAttempts() ([]Job, error) {

@@ -148,6 +148,7 @@ func TestEtcdStorageNewRetrier(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	r.mutex.Lock()
 	if r.nDoOKJobs+r.nStopOKJobs != nJobs {
 		t.Errorf("error nDonedJobs: %v, nJobs: %v", r.nDoOKJobs+r.nStopOKJobs, nJobs)
 	}
@@ -156,6 +157,7 @@ func TestEtcdStorageNewRetrier(t *testing.T) {
 		t.Errorf("error small nManuallyStoppeds: %v, expected: %v",
 			r.nStopOKJobs, nJobs/5)
 	}
+	r.mutex.Unlock()
 
 	// view metric
 	if etcdSto.metric != nil {
@@ -199,9 +201,11 @@ func TestEtcdStorageResumeRetrier(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	r.mutex.Lock()
 	time.Sleep(1 * time.Second)
 	t.Logf("nDoOKJobs: %v", r.nDoOKJobs)
 	if r.nDoErrJobs > 0 {
 		t.Errorf("nDoErrJobs: %v", r.nDoErrJobs)
 	}
+	r.mutex.Unlock()
 }

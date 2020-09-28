@@ -125,8 +125,9 @@ func (s *EtcdStorage) CreateJob(jobId JobId, jobFuncInputs []interface{}) (
 	return job, nil
 }
 
-// returned error can be errNoKeys or other exceptions
-func (s EtcdStorage) getJob(jobId JobId) (Job, error) {
+// returned error can be errNoKeys or other exceptions.
+// Only read the EtcdStorage.
+func (s *EtcdStorage) getJob(jobId JobId) (Job, error) {
 	ctx, cxl := context.WithTimeout(context.Background(), opCRUDTimeout)
 	resp, err := s.cli.Get(ctx, s.keyJob(jobId))
 	cxl()
@@ -265,7 +266,9 @@ func (s *EtcdStorage) TakeJobs() ([]Job, error) {
 	cxl2()
 	return updated.val, nil
 }
-func (s EtcdStorage) DeleteStoppedJobs() (int, error) {
+
+// Only read the EtcdStorage.
+func (s *EtcdStorage) DeleteStoppedJobs() (int, error) {
 	beginKey := s.keyPfx + pfxIdxStatusNextTry + string(Stopped)
 	ctx, cxl := context.WithTimeout(context.Background(), opCRUDTimeout)
 	resp, err := s.cli.Get(ctx, beginKey, clientv3.WithPrefix())
@@ -300,8 +303,9 @@ func (s EtcdStorage) DeleteStoppedJobs() (int, error) {
 	return updated.val, nil
 }
 
-// delete all key with the storage's prefix, for testing
-func (s EtcdStorage) deleteAllKey() (int, error) {
+// delete all key with the storage's prefix, for testing.
+// Only read the EtcdStorage.
+func (s *EtcdStorage) deleteAllKey() (int, error) {
 	ctx, cxl := context.WithTimeout(context.Background(), opCRUDTimeout)
 	resp, err := s.cli.Delete(ctx, s.keyPfx, clientv3.WithPrefix())
 	cxl()
@@ -311,11 +315,13 @@ func (s EtcdStorage) deleteAllKey() (int, error) {
 	return int(resp.Deleted), nil
 }
 
-func (s EtcdStorage) keyJob(jobId JobId) string {
+// Only read the EtcdStorage.
+func (s *EtcdStorage) keyJob(jobId JobId) string {
 	return s.keyPfx + pfxJob + string(jobId)
 }
 
-func (s EtcdStorage) keyIdxStatusNextTry(j Job) string {
+// Only read the EtcdStorage.
+func (s *EtcdStorage) keyIdxStatusNextTry(j Job) string {
 	nextHeartbeat := 3 * j.NextDelay
 	if nextHeartbeat < 5*time.Second {
 		// prevent running jobs can be treated as hanging if NextDelay is too small
@@ -328,11 +334,13 @@ func (s EtcdStorage) keyIdxStatusNextTry(j Job) string {
 		j.Id)
 }
 
-func (s EtcdStorage) ReadJobsRunning() ([]Job, error) {
+// Only read the EtcdStorage.
+func (s *EtcdStorage) ReadJobsRunning() ([]Job, error) {
 	return nil, nil // TODO
 }
 
-func (s EtcdStorage) ReadJobsFailedAllAttempts() ([]Job, error) {
+// Only read the EtcdStorage.
+func (s *EtcdStorage) ReadJobsFailedAllAttempts() ([]Job, error) {
 	return nil, nil // TODO
 }
 

@@ -32,8 +32,8 @@ type Retrier struct {
 }
 
 // NewRetrier init a retrier, default save retrying state to memory.
-// :param jobFunc: inputs must be JSONable if using persist Storage
-// :param retrierName: optional, used as a namespace in persist Storage
+// :param jobFunc: inputs of this func must be JSONable,
+// :param retrierName: optional, used as a namespace in persist Storage,
 func NewRetrier(jobFunc func(inputs ...interface{}) error,
 	cfg *Config, storage Storage) *Retrier {
 	r := &Retrier{
@@ -133,8 +133,9 @@ func (r *Retrier) runJob(j Job) (Job, error) {
 	}
 }
 
-// StopJob manually stops a running job (before MaxAttempts)
-func (r Retrier) StopJob(jobId JobId) error {
+// StopJob manually stops a running job (before MaxAttempts).
+// Only read the Retrier but need pointer receive because of Go
+func (r *Retrier) StopJob(jobId JobId) error {
 	r.mutex.Lock()
 	stopJobCxl, found := r.stopJobCxls[jobId]
 	r.mutex.Unlock()
@@ -268,6 +269,8 @@ func FixedDelay(nTries int, config *Config) time.Duration {
 }
 
 type Job struct {
+	// take care of changing this field data type when the Storage Read and
+	// Update the job with JSON marshal and unmarshal operators
 	JobFuncInputs []interface{}
 	Id            JobId // unique
 	Status        JobStatus

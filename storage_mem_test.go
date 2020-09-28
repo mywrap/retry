@@ -131,6 +131,7 @@ func TestRetrierMemoryStorage2(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	r.mutex.Lock()
 	if r.nDoOKJobs+r.nStopOKJobs != nJobs {
 		t.Errorf("error number of done jobs: %v, expected: %v",
 			r.nDoOKJobs+r.nStopOKJobs, nJobs)
@@ -140,6 +141,7 @@ func TestRetrierMemoryStorage2(t *testing.T) {
 		t.Errorf("small nManuallyStoppeds: %v, expected: %v",
 			r.nStopOKJobs, nJobs/3)
 	}
+	r.mutex.Unlock()
 	if l1, l2 := len(memSto.jobs), memSto.idxStatusNextTry.Len(); l1 != nJobs || l2 != nJobs {
 		t.Errorf("unexpected nJobs: real: %v, %v, expected: %v", l1, l2, nJobs)
 	}
