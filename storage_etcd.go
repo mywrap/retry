@@ -28,14 +28,15 @@ type EtcdStorage struct {
 
 // etcd client
 const (
-	opCRUDTimeout = 3 * time.Second
+	opCRUDTimeout = 5 * time.Second
 	// session was created in maxMutexLockDur can be reused to create new mutex
 	maxMutexLockDur = 3 * opCRUDTimeout
 	// sessionTTL > maxMutexLockDur
-	sessionTTL          = 15 * time.Second
-	pfxLock             = "/lock"
-	pfxJob              = "/job/"               // save jsoned job
-	pfxIdxStatusNextTry = "/idx/statusNextTry/" // save jobId
+	sessionTTL           = maxMutexLockDur + 1*time.Second
+	pfxLock              = "/lock"
+	pfxJob               = "/job/"               // save jsoned job
+	pfxIdxStatusNextTry  = "/idx/statusNextTry/" // save jobId
+	pfxFailedAllAttempts = "/jobFailedAllAttempts/"
 )
 
 // :param keyPfx: different retriers must have different keyPfxs, ex: "/retrierTest3"
@@ -174,6 +175,17 @@ func (s *EtcdStorage) UpdateJob(job Job) error {
 	ctx2, cxl2 := context.WithTimeout(context.Background(), opCRUDTimeout)
 	_, err = s.cli.Put(ctx2, s.keyIdxStatusNextTry(job), string(job.Id))
 	cxl2()
+	if err != nil {
+		return fmt.Errorf("clientv3 put key %v: %v", s.keyIdxStatusNextTry(job), err)
+	}
+	if job.IsFailedAllAttempts {
+		ctx3, cxl3 := context.WithTimeout(context.Background(), opCRUDTimeout)
+		_, err := s.cli.Put(ctx3, s.keyJobFailedAll(job.Id), job.JsonMarshal())
+		cxl3()
+		if err != nil {
+			return fmt.Errorf("clientv3 put key %v: %v", s.keyJobFailedAll(job.Id), err)
+		}
+	}
 	return nil
 }
 
@@ -321,6 +333,11 @@ func (s *EtcdStorage) keyJob(jobId JobId) string {
 }
 
 // Only read the EtcdStorage.
+func (s *EtcdStorage) keyJobFailedAll(jobId JobId) string {
+	return s.keyPfx + pfxFailedAllAttempts + string(jobId)
+}
+
+// Only read the EtcdStorage.
 func (s *EtcdStorage) keyIdxStatusNextTry(j Job) string {
 	nextHeartbeat := 3 * j.NextDelay
 	if nextHeartbeat < 5*time.Second {
@@ -336,12 +353,51 @@ func (s *EtcdStorage) keyIdxStatusNextTry(j Job) string {
 
 // Only read the EtcdStorage.
 func (s *EtcdStorage) ReadJobsRunning() ([]Job, error) {
-	return nil, nil // TODO
+	beginKey := s.keyPfx + pfxIdxStatusNextTry + string(Running)
+	ctx, cxl := context.WithTimeout(context.Background(), opCRUDTimeout)
+	resp, err := s.cli.Get(ctx, beginKey, clientv3.WithPrefix())
+	cxl()
+	if err != nil {
+		return nil, fmt.Errorf("clientv3 get range: %v", err)
+	}
+	runningJobs := make([]Job, 0)
+	mu := &sync.Mutex{}
+	wg := &sync.WaitGroup{}
+	for _, kv := range resp.Kvs {
+		wg.Add(1)
+		go func(kv *mvccpb.KeyValue) {
+			defer wg.Add(-1)
+			job, err := s.getJob(JobId(kv.Value))
+			if err == nil {
+				mu.Lock()
+				runningJobs = append(runningJobs, job)
+				mu.Unlock()
+			}
+		}(kv)
+	}
+	wg.Wait()
+	return runningJobs, nil
 }
 
 // Only read the EtcdStorage.
 func (s *EtcdStorage) ReadJobsFailedAllAttempts() ([]Job, error) {
-	return nil, nil // TODO
+	beginKey := s.keyPfx + pfxFailedAllAttempts
+	ctx, cxl := context.WithTimeout(context.Background(), opCRUDTimeout)
+	resp, err := s.cli.Get(ctx, beginKey, clientv3.WithPrefix())
+	cxl()
+	if err != nil {
+		return nil, fmt.Errorf("clientv3 get range: %v", err)
+	}
+	failJobs := make([]Job, 0)
+	for _, kv := range resp.Kvs {
+		var job Job
+		err = json.Unmarshal(kv.Value, &job)
+		if err != nil { // unreachable
+			return failJobs, fmt.Errorf("invalid failJobs: %v", err)
+		}
+		failJobs = append(failJobs, job)
+	}
+	return failJobs, nil
 }
 
 const fmtRFC3339Mili = "2006-01-02T15:04:05.999Z07:00"

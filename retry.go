@@ -95,7 +95,8 @@ func (r *Retrier) runJob(j Job) (Job, error) {
 		} else {
 			j.Errors = append(j.Errors, err.Error())
 			if j.NTries >= r.cfg.MaxAttempts {
-				j.Status = Stopped //  give up after max attempts
+				j.IsFailedAllAttempts = true
+				j.Status = Stopped
 			} else {
 				j.Status = Running
 			}
@@ -273,12 +274,14 @@ type Job struct {
 	// Update the job with JSON marshal and unmarshal operators
 	JobFuncInputs []interface{}
 	Id            JobId // unique
-	Status        JobStatus
-	NTries        int // number of tried attempts
-	NextDelay     time.Duration
-	LastTried     time.Time
-	LastHost      string   // human readable, the last machine run the job
-	Errors        []string // errors of attempts
+
+	Status              JobStatus
+	IsFailedAllAttempts bool
+	NTries              int // number of tried attempts
+	NextDelay           time.Duration
+	LastTried           time.Time
+	LastHost            string   // human readable, the last machine run the job
+	Errors              []string // errors of attempts
 }
 
 func (j Job) LastErr() error {

@@ -160,3 +160,5 @@ func TestRetrier_Do_NilCustomErr(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// TODO: add tests ReadJobsRunning, ReadJobsFailedAllAttempts

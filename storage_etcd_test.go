@@ -209,3 +209,5 @@ func TestEtcdStorageResumeRetrier(t *testing.T) {
 	}
 	r.mutex.Unlock()
 }
+
+// TODO: add tests ReadJobsRunning, ReadJobsFailedAllAttempts

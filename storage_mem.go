@@ -51,8 +51,8 @@ func (s *MemoryStorage) UpdateJob(job Job) error {
 	updatedJob := NewJobInTree(&job)
 	s.jobs[job.Id] = updatedJob
 	s.idxStatusNextTry.InsertNoReplace(updatedJob)
-	if job.Status == Stopped {
-		//if job.NTries == job.
+	if job.IsFailedAllAttempts {
+		s.jobsFailedAllAttempts = append(s.jobsFailedAllAttempts, job)
 	}
 	return nil
 }
@@ -130,7 +130,18 @@ func (s *MemoryStorage) ReadJobsRunning() ([]Job, error) {
 }
 
 func (s *MemoryStorage) ReadJobsFailedAllAttempts() ([]Job, error) {
-	return nil, nil // TODO
+	s.mutex.Lock()
+	a := make([]Job, len(s.jobsFailedAllAttempts))
+	copy(a, s.jobsFailedAllAttempts)
+	s.mutex.Unlock()
+	if len(a) < 1 {
+		return nil, nil
+	}
+	// reverse
+	for left, right := 0, len(a)-1; left < right; left, right = left+1, right-1 {
+		a[left], a[right] = a[right], a[left]
+	}
+	return a, nil
 }
 
 // JobInTree must be inited by NewJobInTree
