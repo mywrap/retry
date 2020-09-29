@@ -202,8 +202,9 @@ func FuncTestEtcdStorageResumeRetrier(t *testing.T, isExitWhenRunning bool) {
 	}
 	time.Sleep(r.cfg.DelayType(6+rand.Intn(4), r.cfg))
 	if isExitWhenRunning {
-		t.Logf("end when running FuncTestEtcdStorageResumeRetrier")
-		os.Exit(0)
+		running, _ := r.Storage.ReadJobsRunning()
+		t.Logf("end when running, nRunningJobs: %v", len(running))
+		return
 	}
 	wg.Wait()
 	r.mutex.Lock()
