@@ -83,6 +83,9 @@ func (r *Retrier) runJob(j Job) (Job, error) {
 	for {
 		err := r.jobFunc(j.JobFuncInputs...)
 		j.NTries++
+		if j.NTries == 1 {
+			j.FirstTried = time.Now()
+		}
 		j.LastTried = time.Now()
 		j.LastHost = r.hostname
 		j.NextDelay = r.cfg.DelayType(j.NTries, r.cfg)
@@ -279,6 +282,7 @@ type Job struct {
 	IsFailedAllAttempts bool
 	NTries              int // number of tried attempts
 	NextDelay           time.Duration
+	FirstTried          time.Time
 	LastTried           time.Time
 	LastHost            string   // human readable, the last machine run the job
 	Errors              []string // errors of attempts
