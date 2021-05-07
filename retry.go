@@ -16,6 +16,29 @@ import (
 	"github.com/mywrap/gofast"
 )
 
+// Config for Retrier
+type Config struct {
+	MaxAttempts int
+	Delay       time.Duration // delay between retries, default 100ms
+	MaxDelay    time.Duration // max delay between retries, not apply by default
+	MaxJitter   time.Duration // random duration added to delay, default 100ms
+	// defined delay duration for n-th attempt,
+	// default is exponential back-off with jitter function
+	DelayType func(nTries int, config *Config) time.Duration
+	// minimum duration a job can be treated as hanging
+	HangingMinDur time.Duration
+}
+
+func NewDefaultConfig() *Config {
+	return &Config{
+		MaxAttempts:   10,
+		Delay:         100 * time.Millisecond,
+		MaxJitter:     100 * time.Millisecond,
+		DelayType:     ExpBackOffDelay,
+		HangingMinDur: 1 * time.Minute,
+	}
+}
+
 // Retrier is used for retrying jobs, retry state will be saved to a persistent
 // Storage (etcd) so others machine (or restarted machine) can continue the jobs
 // after a crash.
@@ -165,16 +188,20 @@ func (r *Retrier) LoopTakeQueueJobs() {
 		os.Exit(0)
 	}()
 	Log.Println("start LoopTakeQueueJobs")
-	for {
-		coolDown := r.cfg.Delay // have to call time.Sleep(coolDown) in each loop
-		if coolDown < 1*time.Minute {
-			coolDown = 1 * time.Minute
+	coolDown := r.cfg.Delay
+	if coolDown < r.cfg.HangingMinDur {
+		coolDown = r.cfg.HangingMinDur
+	}
+	if coolDown < 1*time.Minute {
+		coolDown = 1 * time.Minute
+	}
+	for i := 0; true; i++ {
+		if i > 0 {
+			time.Sleep(coolDown)
 		}
-
 		nRequeueJobs, err := r.Storage.RequeueHangingJobs()
 		if err != nil {
 			Log.Printf("error RequeueHangingJobs: %v\n", err)
-			time.Sleep(coolDown)
 			continue
 		}
 		if nRequeueJobs > 0 {
@@ -183,7 +210,6 @@ func (r *Retrier) LoopTakeQueueJobs() {
 		redoJobs, err := r.Storage.TakeJobs()
 		if err != nil {
 			Log.Printf("error TakeJobs: %v\n", err)
-			time.Sleep(coolDown)
 			continue
 		}
 		for _, redoJob := range redoJobs {
@@ -194,7 +220,6 @@ func (r *Retrier) LoopTakeQueueJobs() {
 				}
 			}(redoJob)
 		}
-		time.Sleep(coolDown)
 	}
 }
 
@@ -216,26 +241,6 @@ type Storage interface {
 
 	ReadJobsRunning() ([]Job, error)
 	ReadJobsFailedAllAttempts() ([]Job, error)
-}
-
-// Config for Retrier
-type Config struct {
-	MaxAttempts int
-	Delay       time.Duration // delay between retries, default 100ms
-	MaxDelay    time.Duration // max delay between retries, not apply by default
-	MaxJitter   time.Duration // random duration added to delay, default 100ms
-	// defined delay duration for n-th attempt,
-	// default is exponential back-off with jitter function
-	DelayType func(nTries int, config *Config) time.Duration
-}
-
-func NewDefaultConfig() *Config {
-	return &Config{
-		MaxAttempts: 10,
-		Delay:       100 * time.Millisecond,
-		MaxJitter:   100 * time.Millisecond,
-		DelayType:   ExpBackOffDelay,
-	}
 }
 
 // DelayTypeFunc determine delay is after a fail try,
@@ -320,9 +325,8 @@ const (
 )
 
 var (
-	ErrDuplicateJob   = errors.New("duplicate jobId")
-	ErrJobNotRunning  = errors.New("job is not running on this machine")
-	errNotImplemented = errors.New("not implemented")
+	ErrDuplicateJob  = errors.New("duplicate jobId")
+	ErrJobNotRunning = errors.New("job is not running on this machine")
 )
 
 type Logger interface {
