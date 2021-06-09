@@ -25,7 +25,8 @@ type Config struct {
 	// defined delay duration for n-th attempt,
 	// default is exponential back-off with jitter function
 	DelayType func(nTries int, config *Config) time.Duration
-	// minimum duration a job can be treated as hanging
+	// minimum duration a job can be treated as hanging (be used in case of
+	// duration to run a job can be longer than the Delay)
 	HangingMinDur time.Duration
 }
 
@@ -196,9 +197,7 @@ func (r *Retrier) LoopTakeQueueJobs() {
 		coolDown = 1 * time.Minute
 	}
 	for i := 0; true; i++ {
-		if i > 0 {
-			time.Sleep(coolDown)
-		}
+		time.Sleep(coolDown)
 		nRequeueJobs, err := r.Storage.RequeueHangingJobs()
 		if err != nil {
 			Log.Printf("error RequeueHangingJobs: %v\n", err)
