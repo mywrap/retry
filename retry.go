@@ -313,6 +313,22 @@ func (j Job) JsonMarshal() string {
 	return string(bs)
 }
 
+// retrier jobFunc is "func(inputs ...interface{}", the inputs need to be
+// JSONed then save to storage, so while declaring the jobFunc
+// inputs need to be converted from interface{} back to a specific struct.
+// This func gives a convenient way to check and parse the inputs into a struct
+func ConvertMapToStruct(input interface{}, outPtr interface{}) error {
+	dumped, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	err = json.Unmarshal(dumped, outPtr)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 type JobId string     // unique
 type JobStatus string // enum
 
