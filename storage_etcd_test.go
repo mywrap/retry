@@ -18,7 +18,7 @@ import (
 	"go.etcd.io/etcd/v3/clientv3/concurrency"
 )
 
-var etcdConfig0 = clientv3.Config{
+var etcdConfig0 = EtcdClientConfig{
 	Endpoints: []string{
 		"127.0.0.1:2379",
 		//"192.168.99.100:2379",
@@ -48,7 +48,7 @@ func TestEtcdLockSum(t *testing.T) {
 	const sharedSumKey = "/TestEtcdLockSum/sharedSum"
 	const lockKey = "/TestEtcdLockSum/lock"
 	const expectedSum = int64(500)
-	cli0, err := clientv3.New(etcdConfig0)
+	cli0, err := NewEtcdClient(etcdConfig0)
 	if err != nil {
 		t.Fatalf("error etcd clientv3 New: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestEtcdLockSum(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Add(-1)
-			cli1, err := clientv3.New(etcdConfig0)
+			cli1, err := NewEtcdClient(etcdConfig0)
 			if err != nil {
 				t.Fatal(err)
 			}

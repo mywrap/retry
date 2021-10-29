@@ -40,8 +40,8 @@ const (
 )
 
 // :param keyPfx: different retriers must have different keyPfxs, ex: "/retrierTest3"
-func NewEtcdStorage(cliCfg clientv3.Config, keyPfx string) (*EtcdStorage, error) {
-	cli, err := clientv3.New(cliCfg)
+func NewEtcdStorage(cliCfg EtcdClientConfig, keyPfx string) (*EtcdStorage, error) {
+	cli, err := clientv3.New(clientv3.Config(cliCfg))
 	if err != nil {
 		return nil, fmt.Errorf("clientv3 New %#v: %v", cliCfg, err)
 	}
@@ -403,3 +403,13 @@ func (s *EtcdStorage) ReadJobsFailedAllAttempts() ([]Job, error) {
 const fmtRFC3339Mili = "2006-01-02T15:04:05.999Z07:00"
 
 var errNoKeys = errors.New("etcd get no keys")
+
+// following code wraps "go.etcd.io/etcd/v3" type so projects use this package
+// do not need to import "go.etcd.io/etcd/v3" (buggy go.mod)
+
+type EtcdClientConfig = clientv3.Config
+type EtcdClient = clientv3.Client
+
+func NewEtcdClient(config EtcdClientConfig) (*EtcdClient, error) {
+	return clientv3.New(config)
+}
