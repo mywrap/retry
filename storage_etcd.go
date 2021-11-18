@@ -18,10 +18,8 @@ type EtcdStorage struct {
 	cli    *clientv3.Client
 	keyPfx string // keyPfx: /retrierName
 
-	// reuse lock session for reducing grant lease operations
-	session          *concurrency.Session
-	sessionCreatedAt time.Time
-	sessionMu        *sync.Mutex // for session, sessionCreatedAt
+	session   *concurrency.Session // reuse etcd session for reducing grant lease operations
+	sessionMu *sync.Mutex          // protect above field "session"
 
 	metric metric.Metric // can be nil
 }
@@ -30,9 +28,8 @@ type EtcdStorage struct {
 const (
 	opCRUDTimeout = 5 * time.Second
 	// session was created in maxMutexLockDur can be reused to create new mutex
-	maxMutexLockDur = 3 * opCRUDTimeout
 	// sessionTTL > maxMutexLockDur
-	sessionTTL           = maxMutexLockDur + 1*time.Second
+	sessionTTL           = 3*opCRUDTimeout + 1*time.Second
 	pfxLock              = "/lock"
 	pfxJob               = "/job/"               // save jsoned job
 	pfxIdxStatusNextTry  = "/idx/statusNextTry/" // save jobId
@@ -59,28 +56,40 @@ func NewEtcdStorage(cliCfg EtcdClientConfig, keyPfx string) (*EtcdStorage, error
 }
 
 func (s *EtcdStorage) lock() (mutex *concurrency.Mutex, retErr error) {
+	defer func() { // sometime mutex.Lock panics
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("recover %v", r)
+		}
+	}()
 	if s.metric != nil {
 		s.metric.Count("lock")
 		defer func(bt time.Time) { s.metric.Duration("lock", time.Since(bt)) }(time.Now())
 	}
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
-	if s.session == nil || s.sessionCreatedAt.Before(time.Now().Add(-maxMutexLockDur)) {
+
+	var isNeedNewSession bool
+	if s.session == nil {
+		isNeedNewSession = true
+	} else {
+		select {
+		case <-s.session.Done():
+			isNeedNewSession = true
+		default:
+			isNeedNewSession = false
+		}
+	}
+	if isNeedNewSession {
 		//fmt.Println("debug create new session")
-		session, err := concurrency.NewSession(
+		newSession, err := concurrency.NewSession(
 			s.cli, concurrency.WithTTL(int(sessionTTL.Seconds())))
 		if err != nil {
 			return nil, fmt.Errorf("cli NewSession WithTTL: %v", err)
 		}
-		s.session, s.sessionCreatedAt = session, time.Now()
+		s.session = newSession
 	}
 	mutex = concurrency.NewMutex(s.session, s.keyPfx+pfxLock)
-	defer func() { // sometime clientv3 Lock tryAcquire panic
-		if r := recover(); r != nil {
-			retErr = fmt.Errorf("recover %v", r)
-		}
-	}()
-	return mutex, mutex.Lock(context.Background())
+	return mutex, mutex.Lock(context.TODO())
 }
 
 func (s *EtcdStorage) unlock(mutex *concurrency.Mutex) error {
@@ -88,7 +97,7 @@ func (s *EtcdStorage) unlock(mutex *concurrency.Mutex) error {
 		s.metric.Count("unlock")
 		defer func(bt time.Time) { s.metric.Duration("unlock", time.Since(bt)) }(time.Now())
 	}
-	return mutex.Unlock(context.Background())
+	return mutex.Unlock(context.TODO())
 }
 
 func (s *EtcdStorage) CreateJob(jobId JobId, jobFuncInputs []interface{}) (
@@ -412,4 +421,50 @@ type EtcdClient = clientv3.Client
 
 func NewEtcdClient(config EtcdClientConfig) (*EtcdClient, error) {
 	return clientv3.New(config)
+}
+
+// EtcdLock must be inited by calling NewEtcdLock.
+// EtcdLock is not safe to use in multiple goroutines, it should be called once
+// on each machine of a cluster.
+type EtcdLock struct {
+	Session *concurrency.Session
+	Mutex   *concurrency.Mutex
+}
+
+// if machines in a cluster call NewEtcdLock on the same "lockingKey", only one
+// of them get the lock, others block until the lock holder call Unlock
+func NewEtcdLock(etcdClient *EtcdClient, lockingKey string) (
+	myMutex *EtcdLock, err error) {
+	defer func() { // sometimes clientv3 Mutex Lock panics
+		if r := recover(); r != nil {
+			myMutex = nil
+			err = fmt.Errorf("recover %v", r)
+		}
+	}()
+
+	// session WithTTL meaning: https://github.com/etcd-io/etcd/issues/6736,
+	// TLDR: if the lock holder crash, the lock will be released after the WithTTL duration
+	session, err := concurrency.NewSession(etcdClient, concurrency.WithTTL(5))
+	if err != nil {
+		return nil, fmt.Errorf("concurrency.NewSession WithTTL: %v", err)
+	}
+	mutex := concurrency.NewMutex(session, lockingKey)
+	err = mutex.Lock(context.TODO())
+	if err != nil {
+		session.Close()
+		return nil, fmt.Errorf("concurrency.NewMutex: %v", err)
+	}
+	return &EtcdLock{Session: session, Mutex: mutex}, nil
+}
+
+func (m *EtcdLock) Unlock() error {
+	err1 := m.Mutex.Unlock(context.TODO())
+	err2 := m.Session.Close()
+	if err2 != nil {
+		return err2
+	}
+	if err1 != nil {
+		return err1
+	}
+	return nil
 }
