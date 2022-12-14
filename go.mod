@@ -6,5 +6,6 @@ require (
 	github.com/mywrap/gofast v0.1.5
 	github.com/mywrap/metric v0.1.2
 	github.com/petar/GoLLRB v0.0.0-20190514000832-33fb24c13b99
-	go.etcd.io/etcd/v3 v3.3.0-rc.0.0.20200824193021-facd0c946025
+	go.etcd.io/etcd/api/v3 v3.5.5
+	go.etcd.io/etcd/client/v3 v3.5.5
 )

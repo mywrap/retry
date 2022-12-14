@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/mywrap/retry"
-	"go.etcd.io/etcd/v3/clientv3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func main() {

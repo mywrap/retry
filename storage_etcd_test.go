@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/mywrap/gofast"
-	"go.etcd.io/etcd/v3/clientv3"
-	"go.etcd.io/etcd/v3/clientv3/concurrency"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
 )
 
 var etcdConfig0 = EtcdClientConfig{
