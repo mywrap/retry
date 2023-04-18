@@ -252,9 +252,14 @@ var (
 	phiNe = (1 - sqrt5) / 2
 )
 
+// return max int64 if overflow
 func fibonacci(n int) int64 {
 	nn := float64(n)
-	return int64(math.Round((math.Pow(phiPo, nn) - math.Pow(phiNe, nn)) / sqrt5))
+	tmp := math.Round((math.Pow(phiPo, nn) - math.Pow(phiNe, nn)) / sqrt5)
+	if tmp <= float64(math.MaxInt64) {
+		return int64(tmp)
+	}
+	return int64(math.MaxInt64)
 }
 
 // a Fibonacci delay sequence,
@@ -263,6 +268,9 @@ func ExpBackOffDelay(nTries int, config *Config) time.Duration {
 	delay := config.Delay * time.Duration(fibonacci(nTries))
 	if config.MaxJitter > 0 {
 		delay += time.Duration(rand.Int63n(int64(config.MaxJitter)))
+	}
+	if delay < 0 {
+		delay = time.Duration(1<<63 - 1)
 	}
 	return delay
 }

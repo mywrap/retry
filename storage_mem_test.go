@@ -19,6 +19,20 @@ func TestFibonacci(t *testing.T) {
 			t.Errorf("fibonacci: real: %v, expected: %v", r, e)
 		}
 	}
+	f100 := fibonacci(200)
+	if f100 <= 0 {
+		t.Errorf("fibonacci 100th: got: %v, expected positive", f100)
+	}
+}
+
+func TestExpBackOffDelay(t *testing.T) {
+	cfg := &Config{MaxAttempts: 15, DelayType: ExpBackOffDelay,
+		Delay: 100 * time.Millisecond, MaxJitter: 0 * time.Millisecond}
+	delay := ExpBackOffDelay(200, cfg)
+	if delay <= 0 {
+		t.Errorf("error ExpBackOffDelay got %v, expected positive", delay)
+	}
+	t.Logf("delay: %v", delay)
 }
 
 func callUnreliable(txId string, callAt string) (string, error) {
